@@ -16,6 +16,7 @@ import MyClaims from "./pages/applicant/MyClaims.jsx";
 import ClaimDetailApplicant from "./pages/applicant/ClaimDetail.jsx";
 import AdminDashboard from "./pages/admin/Dashboard.jsx";
 import ClaimsQueue from "./pages/admin/Queue.jsx";
+import ManagePolicies from "./pages/admin/Policies.jsx";
 import ClaimReview from "./pages/admin/ClaimReview.jsx";
 import Billing from "./pages/admin/Billing.jsx";
 import SuperAdminDashboard from "./pages/superadmin/Dashboard.jsx";
@@ -28,7 +29,7 @@ import { seedClaims, seedAdjusters, seedPolicyholders } from "./lib/data.js";
 import { NOW, fmtMoney, uid } from "./lib/helpers.js";
 import { PREMIUM_PRICE, PREMIUM_TRIAL_DAYS, SUPERADMIN_CREDENTIALS } from "./lib/constants.js";
 import { SiteNavContext } from "./lib/SiteNav.jsx";
-import { loginRequest, verifyOtpRequest, resendOtpRequest, signupRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
+import { loginRequest, verifyOtpRequest, verifySignupOtpRequest, resendOtpRequest, signupRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
 import { initGoogleSignIn, promptGoogleSignIn } from "./lib/googleAuth.js";
 
 export default function App() {
@@ -53,12 +54,8 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [mobileOpen, setMobileOpen] = useState(false);
-  useEffect(() => {
-    document.body.style.overflow = mobileOpen ? "hidden" : "";
-    return () => { document.body.style.overflow = ""; };
-  }, [mobileOpen]);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [profile, setProfile] = useState({ avatarUrl: null, fullName: "", email: "", phone: "", policyId: "", plan: "", orgName: "", licenseNumber: "", notifyEmail: true, notifySms: false });
+  const [profile, setProfile] = useState({ id: null, avatarUrl: null, fullName: "", email: "", phone: "", policyId: "", plan: "", orgName: "", licenseNumber: "", notifyEmail: true, notifySms: false });
   const updateProfile = (patch) => setProfile((prev) => ({ ...prev, ...patch }));
 
   useEffect(() => {
@@ -85,6 +82,10 @@ export default function App() {
         // active policy, since it's no longer collected at signup.
         if (policies.length > 0) {
           setProfile((prev) => ({ ...prev, policyId: prev.policyId || policies[0].policyId }));
+        } else {
+          // Surface this at login rather than letting it fail silently —
+          // without a policy on file they can't submit a claim yet.
+          pushToast({ type: "warn", title: "No policy linked yet", body: "Your insurer hasn't assigned a policy number to your account. Contact them to get one before filing a claim." });
         }
       })
       .catch(() => { /* non-critical — silently skip if it fails */ });
@@ -105,6 +106,7 @@ export default function App() {
     } else if (identity) {
       setProfile((prev) => ({
         ...prev,
+        id: identity.id || identity._id || null,
         fullName: identity.fullName || "",
         email: identity.email || "",
         policyId: identity.policyNumber || "",
@@ -337,9 +339,14 @@ export default function App() {
           setAuthLoading(true);
           setAuthError("");
           try {
-            await signupRequest(form);
-            pushToast({ type: "success", title: "Account created", body: "You can now log in with your new account." });
-            setScreen("login");
+            const res = await signupRequest(form);
+            // First-time verification: an OTP was just emailed. Don't send
+            // them to the login screen yet — the account can't log in
+            // until this code is entered.
+            setPendingEmail(res.email || form.email);
+            setPendingRemember(!!form.remember);
+            setOtpResendStatus("");
+            setScreen("signup-verify");
           } catch (err) {
             pushToast({ type: "warn", title: "Sign up failed", body: err.message });
           } finally {
@@ -369,7 +376,18 @@ export default function App() {
             setOtpResendStatus("");
             setScreen("login-verify");
           } catch (err) {
-            setAuthError(err.message);
+            if (err.requiresSignupVerification) {
+              // Account was never verified after signup — a fresh code was
+              // already sent server-side. Route into that flow instead of
+              // just showing an error.
+              setPendingEmail(err.email || form.email);
+              setPendingRemember(form.remember);
+              setOtpResendStatus("");
+              pushToast({ type: "warn", title: "Verify your email", body: "We've sent a new verification code — please verify before logging in." });
+              setScreen("signup-verify");
+            } else {
+              setAuthError(err.message);
+            }
           } finally {
             setAuthLoading(false);
           }
@@ -420,6 +438,48 @@ export default function App() {
       </>
     );
   }
+  if (screen === "signup-verify") {
+    return (
+      <>
+      <VerifyEmail
+        email={pendingEmail}
+        onBack={() => { setAuthError(""); setScreen("login"); }}
+        loading={authLoading}
+        error={authError}
+        resendStatus={otpResendStatus}
+        onVerified={async (otp) => {
+          setAuthLoading(true);
+          setAuthError("");
+          try {
+            const res = await verifySignupOtpRequest(pendingEmail, otp, pendingRemember);
+            if (res.pendingApproval) {
+              pushToast({ type: "success", title: "Email verified", body: res.message });
+              setScreen("login");
+            } else {
+              localStorage.setItem("rt_token", res.token);
+              enterApp(res.user.role, res.user);
+              pushToast({ type: "success", title: "Welcome to RightTrack", body: `Signed in as ${res.user.fullName || res.user.email}.` });
+            }
+          } catch (err) {
+            setAuthError(err.message);
+          } finally {
+            setAuthLoading(false);
+          }
+        }}
+        onResend={async () => {
+          setOtpResendStatus("Sending…");
+          try {
+            await resendOtpRequest(pendingEmail);
+            setOtpResendStatus("A new code has been sent.");
+          } catch (err) {
+            setOtpResendStatus(err.message);
+          }
+        }}
+      />
+      <Toast toasts={toasts} />
+      </>
+    );
+  }
   if (screen === "forgot-password") {
     return <><ForgotPassword onBack={() => setScreen("login")} onDone={() => setScreen("login")} /><Toast toasts={toasts} /></>;
   }
@@ -437,6 +497,7 @@ export default function App() {
   if (view === "new") title = "New Claim";
   if (view === "claims") title = "My Claims";
   if (view === "queue") title = "Claims Queue";
+  if (view === "policies") title = "Manage Policies";
   if (view === "api") title = "Developer / API";
   if (view === "billing") title = "Plans & Billing";
   if (view === "sa-dashboard") title = "Super Admin Overview";
@@ -453,18 +514,19 @@ export default function App() {
         <Topbar title={title} subtitle={subtitle} role={role} plan={plan} onMenu={() => setMobileOpen(true)} notifCount={notifCount} onBell={() => setNotifOpen((o) => !o)} onSettings={() => setView("settings")} avatarUrl={profile.avatarUrl} profile={profile} />
         <main className="flex-1 p-4 sm:p-8">
           {role === "applicant" && view === "dashboard" && <ApplicantDashboard claims={claims} onNav={setView} onOpenClaim={openClaim} profile={profile} />}
-          {role === "applicant" && view === "new" && <NewClaimWizard claims={claims} profile={profile} onSubmitClaim={addClaim} pushToast={pushToast} />}
+          {role === "applicant" && view === "new" && <NewClaimWizard claims={claims} onSubmitClaim={addClaim} pushToast={pushToast} />}
           {role === "applicant" && view === "claims" && <MyClaims claims={claims} onOpenClaim={openClaim} onNav={setView} />}
-          {role === "applicant" && view === "detail" && selectedClaim && <ClaimDetailApplicant claim={selectedClaim} onBack={() => setView("claims")} onReupload={reupload} onRate={rate} pushToast={pushToast} />}
+          {role === "applicant" && view === "detail" && selectedClaim && <ClaimDetailApplicant claim={selectedClaim} onBack={() => setView("claims")} onReupload={reupload} onRate={rate} pushToast={pushToast} currentUserId={profile.id} />}
           {role === "admin" && view === "dashboard" && <AdminDashboard claims={adjusterClaims} onOpenClaim={openClaim} profile={profile} />}
           {role === "admin" && view === "queue" && <ClaimsQueue claims={adjusterClaims} onOpenClaim={openClaim} plan={plan} onGoBilling={() => setView("billing")} pushToast={pushToast} insurer={profile.orgName} />}
-          {role === "admin" && view === "detail" && selectedClaim && isOwnClaim && <ClaimReview claim={selectedClaim} onBack={() => setView("queue")} onStartReview={startReview} onDecision={decide} onRequestInfo={requestInfo} pushToast={pushToast} />}
+          {role === "admin" && view === "policies" && <ManagePolicies pushToast={pushToast} />}
+          {role === "admin" && view === "detail" && selectedClaim && isOwnClaim && <ClaimReview claim={selectedClaim} onBack={() => setView("queue")} onStartReview={startReview} onDecision={decide} onRequestInfo={requestInfo} pushToast={pushToast} currentUserId={profile.id} />}
           {role === "admin" && view === "billing" && <Billing plan={plan} onUpgrade={upgradePlan} onDowngrade={downgradePlan} onStartTrial={startTrial} />}
           {role === "superadmin" && view === "sa-dashboard" && <SuperAdminDashboard claims={claims} adjusters={adjusters} policyholders={policyholders} onOpenClaim={openClaim} onNav={setView} />}
           {role === "superadmin" && view === "sa-claims" && <SuperAdminClaims claims={claims} adjusters={adjusters} onOpenClaim={openClaim} />}
           {role === "superadmin" && view === "sa-adjusters" && <SuperAdminAdjusters adjusters={adjusters} claims={claims} onToggleStatus={toggleAdjusterStatus} onAddAdjuster={addAdjuster} pushToast={pushToast} />}
           {role === "superadmin" && view === "sa-policyholders" && <SuperAdminPolicyholders policyholders={policyholders} claims={claims} onToggleStatus={togglePolicyholderStatus} pushToast={pushToast} onOpenClaim={openClaim} />}
-          {role === "superadmin" && view === "detail" && selectedClaim && <ClaimReview claim={selectedClaim} onBack={() => setView("sa-claims")} onDecision={decide} onRequestInfo={requestInfo} pushToast={pushToast} readOnly />}
+          {role === "superadmin" && view === "detail" && selectedClaim && <ClaimReview claim={selectedClaim} onBack={() => setView("sa-claims")} onDecision={decide} onRequestInfo={requestInfo} pushToast={pushToast} currentUserId={profile.id} readOnly />}
           {view === "api" && <ApiDocs role={role} plan={plan} onGoBilling={() => setView("billing")} pushToast={pushToast} />}
           {view === "settings" && <Settings role={role} profile={profile} onUpdateProfile={updateProfile} pushToast={pushToast} />}
         </main>

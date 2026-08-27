@@ -1,12 +1,12 @@
 const express = require("express");
 const router = express.Router();
-const { signup, login, verifyOtpHandler, resendOtp, me, googleAuth, forgotPassword, verifyResetOtp, resetPassword } = require("../controllers/authController");
+const { signup, login, verifyOtpHandler, verifySignupOtp, resendOtp, me, googleAuth, forgotPassword, verifyResetOtp, resetPassword } = require("../controllers/authController");
 const { requireAuth } = require("../middleware/auth");
 
-// POST /api/auth/signup       -> creates the account
+// POST /api/auth/signup       -> creates the account, sends first-time verification OTP
 router.post("/signup", signup);
 
-// POST /api/auth/login        -> checks email+password, sends OTP
+// POST /api/auth/login        -> checks email+password; blocks + resends OTP if unverified, else sends login OTP
 router.post("/login", login);
 
 // POST /api/auth/google       -> verifies Google ID token, logs in directly
@@ -14,6 +14,9 @@ router.post("/google", googleAuth);
 
 // POST /api/auth/verify-otp   -> checks OTP, returns JWT
 router.post("/verify-otp", verifyOtpHandler);
+
+// POST /api/auth/verify-signup-otp -> first-time email verification (after signup, or after login blocks an unverified account)
+router.post("/verify-signup-otp", verifySignupOtp);
 
 // POST /api/auth/resend-otp   -> sends a new OTP if the old one expired
 router.post("/resend-otp", resendOtp);
