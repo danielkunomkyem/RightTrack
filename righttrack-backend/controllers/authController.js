@@ -49,20 +49,10 @@ async function signup(req, res) {
       claimCategories: role === "admin" ? (Array.isArray(claimCategories) ? claimCategories : []) : undefined,
     });
 
-    // First-time email verification: send an OTP immediately so the
-    // frontend can route straight into a "verify your email" step before
-    // this account is ever allowed to log in. login() checks isVerified
-    // and refuses to proceed until this OTP (or a resend of it) is used.
-    const otp = generateOtp();
-    user.otpHash = hashOtp(otp);
-    user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-    user.otpAttempts = 0;
-    await user.save();
-    await sendOtpEmail(user.email, otp);
-
     return res.status(201).json({
-      message: "Account created. Check your email for a verification code.",
-      email: user.email,
+      message: role === "admin"
+        ? "Account created. Your License/Staff ID and CAC number are now awaiting Super Admin approval — you'll be able to log in once approved."
+        : "Account created.",
       user: { id: user._id, fullName: user.fullName, email: user.email, role: user.role, verificationStatus: user.verificationStatus },
     });
   } catch (err) {
@@ -95,24 +85,6 @@ async function login(req, res) {
     if (!passwordMatches) {
       console.log("Password did not match for:", email);
       return res.status(401).json({ message: "Invalid email or password." });
-    }
-
-    // First-time signup verification gate — must happen before any other
-    // login check, since an unverified account shouldn't be told anything
-    // about its approval status yet. Sends a fresh code so the frontend can
-    // route straight into the verify-signup step instead of a dead end.
-    if (!user.isVerified) {
-      const otp = generateOtp();
-      user.otpHash = hashOtp(otp);
-      user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-      user.otpAttempts = 0;
-      await user.save();
-      await sendOtpEmail(user.email, otp);
-      return res.status(403).json({
-        message: "Please verify your email address first. We've sent a new verification code.",
-        requiresSignupVerification: true,
-        email: user.email,
-      });
     }
 
     if (user.verificationStatus === "pending") {
@@ -207,86 +179,6 @@ async function verifyOtpHandler(req, res) {
     });
   } catch (err) {
     console.error("OTP verification error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
-  }
-}
-
-/**
- * POST /api/auth/verify-signup-otp
- * Body: { email, otp, remember }
- * First-time verification, separate from the every-login OTP in
- * verifyOtpHandler. Marks the account verified and, since the password was
- * already confirmed at signup, logs the person straight in — no need to
- * make them re-enter their password right after this. Adjuster accounts
- * still awaiting Super Admin approval get verified but no token yet.
- */
-async function verifySignupOtp(req, res) {
-  try {
-    const { email, otp, remember } = req.body;
-
-    if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required." });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
-      return res.status(400).json({ message: "No pending verification for this account." });
-    }
-
-    if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(400).json({ message: "Code has expired. Please request a new one." });
-    }
-
-    if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(429).json({ message: "Too many failed attempts. Please request a new code." });
-    }
-
-    if (!verifyOtp(otp, user.otpHash)) {
-      user.otpAttempts += 1;
-      await user.save();
-      return res.status(400).json({ message: "Incorrect code. Please try again." });
-    }
-
-    user.otpHash = null;
-    user.otpExpiresAt = null;
-    user.otpAttempts = 0;
-    user.isVerified = true;
-    await user.save();
-
-    if (user.verificationStatus === "pending") {
-      return res.status(200).json({
-        message: "Email verified. Your adjuster account is now awaiting Super Admin approval — you'll be able to log in once approved.",
-        pendingApproval: true,
-      });
-    }
-
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: remember ? "30d" : "1d" }
-    );
-
-    return res.status(200).json({
-      message: "Email verified.",
-      token,
-      user: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-        policyNumber: user.policyNumber,
-        orgName: user.orgName,
-        licenseNumber: user.licenseNumber,
-      },
-    });
-  } catch (err) {
-    console.error("Verify signup OTP error:", err);
     return res.status(500).json({ message: "Something went wrong. Please try again." });
   }
 }
@@ -548,4 +440,4 @@ async function resetPassword(req, res) {
   }
 }
 
-module.exports = { signup, login, verifyOtpHandler, verifySignupOtp, resendOtp, me, googleAuth, forgotPassword, verifyResetOtp, resetPassword };
+module.exports = { signup, login, verifyOtpHandler, resendOtp, me, googleAuth, forgotPassword, verifyResetOtp, resetPassword };
