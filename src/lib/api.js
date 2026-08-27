@@ -8,7 +8,11 @@ async function request(path, body) {
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data.message || "Something went wrong. Please try again.");
+    const err = new Error(data.message || "Something went wrong. Please try again.");
+    // Carry any extra fields (e.g. requiresSignupVerification, email) onto
+    // the Error object so callers can branch on more than just the message.
+    Object.assign(err, data);
+    throw err;
   }
   return data;
 }
@@ -19,6 +23,12 @@ export function loginRequest(email, password) {
 
 export function verifyOtpRequest(email, otp, remember = false) {
   return request("/verify-otp", { email, otp, remember });
+}
+
+// First-time email verification, right after signup (or after login blocks
+// an unverified account and resends a fresh code).
+export function verifySignupOtpRequest(email, otp, remember = false) {
+  return request("/verify-signup-otp", { email, otp, remember });
 }
 
 export function resendOtpRequest(email) {
