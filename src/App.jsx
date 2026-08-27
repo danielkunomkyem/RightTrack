@@ -28,7 +28,7 @@ import { seedClaims, seedAdjusters, seedPolicyholders } from "./lib/data.js";
 import { NOW, fmtMoney, uid } from "./lib/helpers.js";
 import { PREMIUM_PRICE, PREMIUM_TRIAL_DAYS, SUPERADMIN_CREDENTIALS } from "./lib/constants.js";
 import { SiteNavContext } from "./lib/SiteNav.jsx";
-import { loginRequest, verifyOtpRequest, verifySignupOtpRequest, resendOtpRequest, signupRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
+import { loginRequest, verifyOtpRequest, resendOtpRequest, signupRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
 import { initGoogleSignIn, promptGoogleSignIn } from "./lib/googleAuth.js";
 
 export default function App() {
@@ -85,10 +85,6 @@ export default function App() {
         // active policy, since it's no longer collected at signup.
         if (policies.length > 0) {
           setProfile((prev) => ({ ...prev, policyId: prev.policyId || policies[0].policyId }));
-        } else {
-          // Surface this at login rather than letting it fail silently —
-          // without a policy on file they can't submit a claim yet.
-          pushToast({ type: "warn", title: "No policy linked yet", body: "Your insurer hasn't assigned a policy number to your account. Contact them to get one before filing a claim." });
         }
       })
       .catch(() => { /* non-critical — silently skip if it fails */ });
@@ -341,14 +337,9 @@ export default function App() {
           setAuthLoading(true);
           setAuthError("");
           try {
-            const res = await signupRequest(form);
-            // First-time verification: an OTP was just emailed. Don't send
-            // them to the login screen yet — the account can't log in
-            // until this code is entered.
-            setPendingEmail(res.email || form.email);
-            setPendingRemember(!!form.remember);
-            setOtpResendStatus("");
-            setScreen("signup-verify");
+            await signupRequest(form);
+            pushToast({ type: "success", title: "Account created", body: "You can now log in with your new account." });
+            setScreen("login");
           } catch (err) {
             pushToast({ type: "warn", title: "Sign up failed", body: err.message });
           } finally {
@@ -378,18 +369,7 @@ export default function App() {
             setOtpResendStatus("");
             setScreen("login-verify");
           } catch (err) {
-            if (err.requiresSignupVerification) {
-              // Account was never verified after signup — a fresh code was
-              // already sent server-side. Route into that flow instead of
-              // just showing an error.
-              setPendingEmail(err.email || form.email);
-              setPendingRemember(form.remember);
-              setOtpResendStatus("");
-              pushToast({ type: "warn", title: "Verify your email", body: "We've sent a new verification code — please verify before logging in." });
-              setScreen("signup-verify");
-            } else {
-              setAuthError(err.message);
-            }
+            setAuthError(err.message);
           } finally {
             setAuthLoading(false);
           }
@@ -420,48 +400,6 @@ export default function App() {
             const res = await verifyOtpRequest(pendingEmail, otp, pendingRemember);
             localStorage.setItem("rt_token", res.token);
             enterApp(res.user.role, res.user);
-          } catch (err) {
-            setAuthError(err.message);
-          } finally {
-            setAuthLoading(false);
-          }
-        }}
-        onResend={async () => {
-          setOtpResendStatus("Sending…");
-          try {
-            await resendOtpRequest(pendingEmail);
-            setOtpResendStatus("A new code has been sent.");
-          } catch (err) {
-            setOtpResendStatus(err.message);
-          }
-        }}
-      />
-      <Toast toasts={toasts} />
-      </>
-    );
-  }
-  if (screen === "signup-verify") {
-    return (
-      <>
-      <VerifyEmail
-        email={pendingEmail}
-        onBack={() => { setAuthError(""); setScreen("login"); }}
-        loading={authLoading}
-        error={authError}
-        resendStatus={otpResendStatus}
-        onVerified={async (otp) => {
-          setAuthLoading(true);
-          setAuthError("");
-          try {
-            const res = await verifySignupOtpRequest(pendingEmail, otp, pendingRemember);
-            if (res.pendingApproval) {
-              pushToast({ type: "success", title: "Email verified", body: res.message });
-              setScreen("login");
-            } else {
-              localStorage.setItem("rt_token", res.token);
-              enterApp(res.user.role, res.user);
-              pushToast({ type: "success", title: "Welcome to RightTrack", body: `Signed in as ${res.user.fullName || res.user.email}.` });
-            }
           } catch (err) {
             setAuthError(err.message);
           } finally {

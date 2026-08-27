@@ -1,551 +1,538 @@
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
-const { OAuth2Client } = require("google-auth-library");
-const User = require("../models/User");
-const { generateOtp, hashOtp, verifyOtp } = require("../utils/otp");
-const { sendOtpEmail, sendPasswordResetEmail } = require("../utils/sendEmail");
+import { useEffect, useRef, useState } from "react";
+import Sidebar from "./components/Sidebar.jsx";
+import Topbar from "./components/Topbar.jsx";
+import NotifPanel from "./components/NotifPanel.jsx";
+import { Toast } from "./components/UI.jsx";
+import Landing from "./pages/Landing.jsx";
+import Developers from "./pages/Developers.jsx";
+import Faq from "./pages/Faq.jsx";
+import Blog from "./pages/Blog.jsx";
+import Privacy from "./pages/Privacy.jsx";
+import Terms from "./pages/Terms.jsx";
+import { SignUp, Login, VerifyEmail, SuperAdminLogin, ForgotPassword } from "./pages/Auth.jsx";
+import ApplicantDashboard from "./pages/applicant/Dashboard.jsx";
+import NewClaimWizard from "./pages/applicant/NewClaim.jsx";
+import MyClaims from "./pages/applicant/MyClaims.jsx";
+import ClaimDetailApplicant from "./pages/applicant/ClaimDetail.jsx";
+import AdminDashboard from "./pages/admin/Dashboard.jsx";
+import ClaimsQueue from "./pages/admin/Queue.jsx";
+import ManagePolicies from "./pages/admin/Policies.jsx";
+import ClaimReview from "./pages/admin/ClaimReview.jsx";
+import Billing from "./pages/admin/Billing.jsx";
+import SuperAdminDashboard from "./pages/superadmin/Dashboard.jsx";
+import SuperAdminClaims from "./pages/superadmin/Claims.jsx";
+import SuperAdminAdjusters from "./pages/superadmin/Adjusters.jsx";
+import SuperAdminPolicyholders from "./pages/superadmin/Policyholders.jsx";
+import ApiDocs from "./pages/ApiDocs.jsx";
+import Settings from "./pages/Settings.jsx";
+import { seedClaims, seedAdjusters, seedPolicyholders } from "./lib/data.js";
+import { NOW, fmtMoney, uid } from "./lib/helpers.js";
+import { PREMIUM_PRICE, PREMIUM_TRIAL_DAYS, SUPERADMIN_CREDENTIALS } from "./lib/constants.js";
+import { SiteNavContext } from "./lib/SiteNav.jsx";
+import { loginRequest, verifyOtpRequest, verifySignupOtpRequest, resendOtpRequest, signupRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
+import { initGoogleSignIn, promptGoogleSignIn } from "./lib/googleAuth.js";
 
-const OTP_EXPIRY_MINUTES = 5;
-const MAX_OTP_ATTEMPTS = 5;
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+export default function App() {
+  const [screen, setScreen] = useState("landing");
+  const [scrollTarget, setScrollTarget] = useState(null);
+  const [pendingEmail, setPendingEmail] = useState("");
+  const [pendingRole, setPendingRole] = useState("applicant");
+  const [pendingRemember, setPendingRemember] = useState(false);
+  const [signupRole, setSignupRole] = useState("applicant");
+  const [pendingSignup, setPendingSignup] = useState(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [otpResendStatus, setOtpResendStatus] = useState("");
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [role, setRole] = useState("applicant");
+  const [plan, setPlan] = useState("free");
+  const [claims, setClaims] = useState(seedClaims);
+  const [myPolicies, setMyPolicies] = useState([]);
+  const [adjusters, setAdjusters] = useState(seedAdjusters);
+  const [policyholders, setPolicyholders] = useState(seedPolicyholders);
+  const [view, setView] = useState("dashboard");
+  const [selected, setSelected] = useState(null);
+  const [toasts, setToasts] = useState([]);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [profile, setProfile] = useState({ id: null, avatarUrl: null, fullName: "", email: "", phone: "", policyId: "", plan: "", orgName: "", licenseNumber: "", notifyEmail: true, notifySms: false });
+  const updateProfile = (patch) => setProfile((prev) => ({ ...prev, ...patch }));
 
-/**
- * POST /api/auth/signup
- * Body matches your SignUp form in Auth.jsx: { role, fullName, email, password,
- * policyNumber?, orgName?, isRegisteredOrg?, cac?, licenseNumber? }
- * Creates the account. Does NOT log them in — your frontend already routes
- * signup -> VerifyEmail -> enterApp, so this just creates the user record.
- */
-async function signup(req, res) {
-  console.log("SIGNUP endpoint hit. Body:", req.body);
-  try {
-    const { role, fullName, email, password, policyNumber, orgName, isRegisteredOrg, cac, licenseNumber, claimCategories } = req.body;
+  useEffect(() => {
+    if (screen === "landing" && scrollTarget) return;
+    window.scrollTo(0, 0);
+  }, [screen]);
 
-    if (!fullName || !email || !password) {
-      return res.status(400).json({ message: "Full name, email, and password are required." });
+  // Load real claims from the backend once the person is inside the app.
+  useEffect(() => {
+    if (screen !== "app") return;
+    listClaimsRequest()
+      .then(({ claims }) => setClaims(claims))
+      .catch((err) => pushToast({ type: "warn", title: "Couldn't load claims", body: err.message }));
+  }, [screen]);
+
+  // Policyholders: load the policy numbers assigned to them, so a fresh
+  // assignment shows up as a real notification, not just an email.
+  useEffect(() => {
+    if (screen !== "app" || role !== "applicant") return;
+    listMyPoliciesRequest()
+      .then(({ policies }) => {
+        setMyPolicies(policies);
+        // Auto-fill the Settings page's "Policy Number" with their first
+        // active policy, since it's no longer collected at signup.
+        if (policies.length > 0) {
+          setProfile((prev) => ({ ...prev, policyId: prev.policyId || policies[0].policyId }));
+        } else {
+          // Surface this at login rather than letting it fail silently —
+          // without a policy on file they can't submit a claim yet.
+          pushToast({ type: "warn", title: "No policy linked yet", body: "Your insurer hasn't assigned a policy number to your account. Contact them to get one before filing a claim." });
+        }
+      })
+      .catch(() => { /* non-critical — silently skip if it fails */ });
+  }, [screen, role]);
+
+  const pushToast = (t) => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts((prev) => [...prev, { ...t, id }]);
+    setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), 4200);
+  };
+
+  const enterApp = (r = "applicant", identity = null) => {
+    setRole(r);
+    setScreen("app");
+    setView(r === "superadmin" ? "sa-dashboard" : "dashboard");
+    if (r === "superadmin") {
+      setProfile((prev) => ({ ...prev, fullName: "System Administrator", email: SUPERADMIN_CREDENTIALS.email }));
+    } else if (identity) {
+      setProfile((prev) => ({
+        ...prev,
+        id: identity.id || identity._id || null,
+        fullName: identity.fullName || "",
+        email: identity.email || "",
+        policyId: identity.policyNumber || "",
+        orgName: identity.orgName || "",
+        licenseNumber: identity.licenseNumber || "",
+      }));
     }
+  };
+  const exitApp = () => {
+    localStorage.removeItem("rt_token");
+    setScreen("landing");
+    setView("dashboard");
+    setSelected(null);
+  };
 
-    const normalizedEmail = email.toLowerCase().trim();
-    console.log("Checking for existing user with normalized email:", normalizedEmail);
-    const existing = await User.findOne({ email: normalizedEmail });
-    if (existing) {
-      console.log("Found existing account:", existing.email, "| id:", existing._id);
-      return res.status(409).json({ message: "An account with this email already exists." });
+  // On page load, try to restore a session from a token saved in localStorage.
+  // This is what makes "Remember me" actually stick across refreshes.
+  useEffect(() => {
+    const token = localStorage.getItem("rt_token");
+    if (!token) {
+      setSessionChecked(true);
+      return;
     }
-    console.log("No existing account found — proceeding to create.");
+    meRequest(token)
+      .then((res) => {
+        enterApp(res.user.role, res.user);
+      })
+      .catch(() => {
+        localStorage.removeItem("rt_token");
+      })
+      .finally(() => setSessionChecked(true));
+  }, []);
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const user = await User.create({
-      role: role || "applicant",
-      fullName,
-      email: email.toLowerCase().trim(),
-      password: hashedPassword,
-      policyNumber,
-      orgName,
-      isRegisteredOrg,
-      cac,
-      licenseNumber,
-      claimCategories: role === "admin" ? (Array.isArray(claimCategories) ? claimCategories : []) : undefined,
-    });
-
-    // First-time email verification: send an OTP immediately so the
-    // frontend can route straight into a "verify your email" step before
-    // this account is ever allowed to log in. login() checks isVerified
-    // and refuses to proceed until this OTP (or a resend of it) is used.
-    const otp = generateOtp();
-    user.otpHash = hashOtp(otp);
-    user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-    user.otpAttempts = 0;
-    await user.save();
-    await sendOtpEmail(user.email, otp);
-
-    return res.status(201).json({
-      message: "Account created. Check your email for a verification code.",
-      email: user.email,
-      user: { id: user._id, fullName: user.fullName, email: user.email, role: user.role, verificationStatus: user.verificationStatus },
-    });
-  } catch (err) {
-    console.error("Signup error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
-  }
-}
-
-/**
- * STEP 1 — POST /api/auth/login
- * Body: { email, password }
- * Verifies credentials, generates + emails an OTP, but does NOT log the user in yet.
- */
-async function login(req, res) {
-  console.log("LOGIN endpoint hit. Body:", req.body);
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required." });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user) {
-      console.log("No user found for email:", email);
-      return res.status(401).json({ message: "Invalid email or password." });
-    }
-
-    const passwordMatches = await bcrypt.compare(password, user.password);
-    if (!passwordMatches) {
-      console.log("Password did not match for:", email);
-      return res.status(401).json({ message: "Invalid email or password." });
-    }
-
-    // First-time signup verification gate — must happen before any other
-    // login check, since an unverified account shouldn't be told anything
-    // about its approval status yet. Sends a fresh code so the frontend can
-    // route straight into the verify-signup step instead of a dead end.
-    if (!user.isVerified) {
-      const otp = generateOtp();
-      user.otpHash = hashOtp(otp);
-      user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-      user.otpAttempts = 0;
-      await user.save();
-      await sendOtpEmail(user.email, otp);
-      return res.status(403).json({
-        message: "Please verify your email address first. We've sent a new verification code.",
-        requiresSignupVerification: true,
-        email: user.email,
-      });
-    }
-
-    if (user.verificationStatus === "pending") {
-      return res.status(403).json({ message: "Your adjuster account is still awaiting Super Admin approval. This usually takes 1–2 business days." });
-    }
-    if (user.verificationStatus === "rejected") {
-      return res.status(403).json({ message: user.verificationNote || "Your adjuster account application was not approved. Contact support for details." });
-    }
-
-    const otp = generateOtp();
-    console.log("Generated OTP for", email, ":", otp);
-    user.otpHash = hashOtp(otp);
-    user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-    user.otpAttempts = 0;
-    await user.save();
-    console.log("User OTP fields saved. Calling sendOtpEmail...");
-
-    await sendOtpEmail(user.email, otp);
-    console.log("sendOtpEmail call completed without throwing.");
-
-    return res.status(200).json({
-      message: "OTP sent to your registered email.",
-      email: user.email, // frontend carries this forward to the verify screen
-    });
-  } catch (err) {
-    console.error("Login error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
-  }
-}
-
-/**
- * STEP 2 — POST /api/auth/verify-otp
- * Body: { email, otp }
- * Verifies the OTP and, if valid, issues a JWT.
- */
-async function verifyOtpHandler(req, res) {
-  try {
-    const { email, otp, remember } = req.body;
-
-    if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required." });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
-      return res.status(400).json({ message: "No pending verification for this account." });
-    }
-
-    if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(400).json({ message: "OTP has expired. Please log in again." });
-    }
-
-    if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(429).json({ message: "Too many failed attempts. Please log in again." });
-    }
-
-    const isValid = verifyOtp(otp, user.otpHash);
-    if (!isValid) {
-      user.otpAttempts += 1;
-      await user.save();
-      return res.status(400).json({ message: "Incorrect OTP. Please try again." });
-    }
-
-    // Success — clear OTP fields, mark verified, issue token
-    user.otpHash = null;
-    user.otpExpiresAt = null;
-    user.otpAttempts = 0;
-    user.isVerified = true;
-    await user.save();
-
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: remember ? "30d" : "1d" }
-    );
-
-    return res.status(200).json({
-      message: "Login successful.",
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-    });
-  } catch (err) {
-    console.error("OTP verification error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
-  }
-}
-
-/**
- * POST /api/auth/verify-signup-otp
- * Body: { email, otp, remember }
- * First-time verification, separate from the every-login OTP in
- * verifyOtpHandler. Marks the account verified and, since the password was
- * already confirmed at signup, logs the person straight in — no need to
- * make them re-enter their password right after this. Adjuster accounts
- * still awaiting Super Admin approval get verified but no token yet.
- */
-async function verifySignupOtp(req, res) {
-  try {
-    const { email, otp, remember } = req.body;
-
-    if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required." });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
-      return res.status(400).json({ message: "No pending verification for this account." });
-    }
-
-    if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(400).json({ message: "Code has expired. Please request a new one." });
-    }
-
-    if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(429).json({ message: "Too many failed attempts. Please request a new code." });
-    }
-
-    if (!verifyOtp(otp, user.otpHash)) {
-      user.otpAttempts += 1;
-      await user.save();
-      return res.status(400).json({ message: "Incorrect code. Please try again." });
-    }
-
-    user.otpHash = null;
-    user.otpExpiresAt = null;
-    user.otpAttempts = 0;
-    user.isVerified = true;
-    await user.save();
-
-    if (user.verificationStatus === "pending") {
-      return res.status(200).json({
-        message: "Email verified. Your adjuster account is now awaiting Super Admin approval — you'll be able to log in once approved.",
-        pendingApproval: true,
-      });
-    }
-
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: remember ? "30d" : "1d" }
-    );
-
-    return res.status(200).json({
-      message: "Email verified.",
-      token,
-      user: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-        policyNumber: user.policyNumber,
-        orgName: user.orgName,
-        licenseNumber: user.licenseNumber,
-      },
-    });
-  } catch (err) {
-    console.error("Verify signup OTP error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
-  }
-}
-
-/**
- * POST /api/auth/resend-otp
- * Body: { email }
- * Generates a fresh OTP if the user has a pending login attempt.
- */
-async function resendOtp(req, res) {
-  try {
-    const { email } = req.body;
-    const user = await User.findOne({ email: (email || "").toLowerCase().trim() });
-
-    if (!user) {
-      return res.status(400).json({ message: "No pending verification for this account." });
-    }
-
-    const otp = generateOtp();
-    user.otpHash = hashOtp(otp);
-    user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-    user.otpAttempts = 0;
-    await user.save();
-
-    await sendOtpEmail(user.email, otp);
-
-    return res.status(200).json({ message: "A new OTP has been sent." });
-  } catch (err) {
-    console.error("Resend OTP error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
-  }
-}
-
-/**
- * GET /api/auth/me
- * Requires a valid JWT (Authorization: Bearer <token>).
- * Returns the current user's info — used on app load to restore
- * a session from a token saved in localStorage.
- */
-async function me(req, res) {
-  try {
-    const user = await User.findById(req.user.id).select("-password -otpHash -otpExpiresAt -otpAttempts");
-    if (!user) {
-      return res.status(404).json({ message: "User not found." });
-    }
-    return res.status(200).json({ user });
-  } catch (err) {
-    console.error("Me endpoint error:", err);
-    return res.status(500).json({ message: "Something went wrong." });
-  }
-}
-
-/**
- * POST /api/auth/google
- * Body: { credential, role, remember }
- * `credential` is the ID token Google's Sign-In button hands back to the frontend.
- * We verify it server-side, then find-or-create the account and log them in
- * directly — no password, no OTP, since Google has already verified the email.
- */
-async function googleAuth(req, res) {
-  try {
-    const { credential, role, remember } = req.body;
-
-    if (!credential) {
-      return res.status(400).json({ message: "Missing Google credential." });
-    }
-
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
-
-    if (!payload.email_verified) {
-      return res.status(400).json({ message: "Google email is not verified." });
-    }
-
-    const email = payload.email.toLowerCase().trim();
-    let user = await User.findOne({ email });
-
-    if (!user) {
-      if (role === "admin") {
-        return res.status(400).json({ message: "Adjuster accounts need organization details — please use the full sign-up form instead of Google for your first sign-up." });
+  // Set up Google Identity Services once. The callback fires whenever the
+  // person completes the Google popup, from whichever button triggered it.
+  const pendingGoogleRoleRef = useRef("applicant");
+  useEffect(() => {
+    initGoogleSignIn(async (credential) => {
+      setAuthLoading(true);
+      try {
+        const res = await googleAuthRequest(credential, pendingGoogleRoleRef.current, false);
+        localStorage.setItem("rt_token", res.token);
+        enterApp(res.user.role, res.user);
+        pushToast({ type: "success", title: "Signed in with Google", body: `Welcome, ${res.user.fullName || res.user.email}.` });
+      } catch (err) {
+        pushToast({ type: "warn", title: "Google sign-in failed", body: err.message });
+      } finally {
+        setAuthLoading(false);
       }
-      user = await User.create({
-        role: role || "applicant",
-        fullName: payload.name || email.split("@")[0],
-        email,
-        isGoogleAccount: true,
-        isVerified: true,
-      });
-    } else if (!user.isGoogleAccount) {
-      // An account with this email already exists via normal signup.
-      // Link it: allow Google sign-in for it going forward too.
-      user.isGoogleAccount = true;
-      user.isVerified = true;
-      await user.save();
-    }
-
-    // If the person picked a different account type on screen than what
-    // this email is actually registered as, stop and explain — don't
-    // silently drop them into the wrong dashboard.
-    if (role && user.role !== "superadmin" && role !== user.role) {
-      const roleLabel = { applicant: "Policy Holder", admin: "Adjuster" };
-      return res.status(409).json({
-        message: `This Google account is already registered as a ${roleLabel[user.role] || user.role}, not a ${roleLabel[role] || role}. Please switch tabs and log in as the correct account type, or use a different email to sign up as a ${roleLabel[role] || role}.`,
-      });
-    }
-
-    if (user.verificationStatus === "pending") {
-      return res.status(403).json({ message: "Your adjuster account is still awaiting Super Admin approval. This usually takes 1–2 business days." });
-    }
-    if (user.verificationStatus === "rejected") {
-      return res.status(403).json({ message: user.verificationNote || "Your adjuster account application was not approved. Contact support for details." });
-    }
-
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: remember ? "30d" : "1d" }
-    );
-
-    return res.status(200).json({
-      message: "Login successful.",
-      token,
-      user: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-      },
     });
-  } catch (err) {
-    console.error("Google auth error:", err);
-    return res.status(401).json({ message: "Google sign-in failed. Please try again." });
+  }, []);
+
+  const openClaim = (id) => { setSelected(id); setView("detail"); };
+
+  const addClaim = async (claimObj, refToOpen) => {
+    if (claimObj) {
+      try {
+        const { claim } = await createClaimRequest({
+          policyId: claimObj.policyId,
+          insurer: claimObj.insurer,
+          category: claimObj.category,
+          amount: claimObj.amount,
+          description: claimObj.description,
+          documents: claimObj.documents,
+        });
+        setClaims((prev) => [claim, ...prev]);
+        pushToast({ type: "success", title: "Claim submitted", body: `Reference ${claim.id} created.` });
+        return claim.id;
+      } catch (err) {
+        pushToast({ type: "warn", title: "Submission failed", body: err.message });
+        return null;
+      }
+    }
+    if (refToOpen) { setSelected(refToOpen); setView("detail"); }
+  };
+
+  const reupload = async (id, files) => {
+    try {
+      const { claim } = await reuploadRequest(id, files);
+      setClaims((prev) => prev.map((c) => (c.id === id ? claim : c)));
+      pushToast({ type: "success", title: "Document submitted", body: "Your claim is back under review." });
+    } catch (err) {
+      pushToast({ type: "warn", title: "Couldn't submit document", body: err.message });
+    }
+  };
+
+  const rate = async (id, r) => {
+    try {
+      const { claim } = await rateClaimRequest(id, r.stars, r.review);
+      setClaims((prev) => prev.map((c) => (c.id === id ? claim : c)));
+      pushToast({ type: "success", title: "Thanks for your feedback!" });
+    } catch (err) {
+      pushToast({ type: "warn", title: "Couldn't submit rating", body: err.message });
+    }
+  };
+
+  const startReview = async (id) => {
+    try {
+      const { claim } = await startReviewRequest(id);
+      setClaims((prev) => prev.map((c) => (c.id === id ? claim : c)));
+      pushToast({ type: "success", title: `${id} moved to Under Review`, body: `Assigned to ${claim.adjuster}.` });
+    } catch (err) {
+      pushToast({ type: "warn", title: "Couldn't start review", body: err.message });
+    }
+  };
+
+  const decide = async (id, status, { rejectionCode, notes } = {}) => {
+    try {
+      const { claim } = await decideClaimRequest(id, status, rejectionCode, notes);
+      setClaims((prev) => prev.map((c) => (c.id === id ? claim : c)));
+      pushToast({ type: status === "approved" ? "success" : "warn", title: `${id} marked ${status}`, body: "Applicant view updated in real time." });
+    } catch (err) {
+      pushToast({ type: "warn", title: "Couldn't record decision", body: err.message });
+    }
+  };
+
+  const startTrial = () => {
+    setPlan("trial");
+    pushToast({ type: "success", title: "Free trial started", body: `Your ${PREMIUM_TRIAL_DAYS}-day free trial is active. API keys and CSV export are now unlocked — cancel anytime.` });
+  };
+  const upgradePlan = (cycle) => {
+    setPlan("premium");
+    pushToast({ type: "success", title: "Subscription active", body: `Billed ${fmtMoney(PREMIUM_PRICE[cycle])} / ${cycle === "annual" ? "year" : "month"}. API keys and CSV export are now unlocked.` });
+  };
+  const downgradePlan = () => {
+    const wasTrial = plan === "trial";
+    setPlan("free");
+    pushToast({ type: "warn", title: wasTrial ? "Trial canceled" : "Subscription canceled", body: "You're back on the free plan — subscriber-only features are now locked." });
+  };
+
+  const toggleAdjusterStatus = (id) => {
+    setAdjusters((prev) => prev.map((a) => a.id === id ? { ...a, status: a.status === "active" ? "suspended" : "active" } : a));
+    const a = adjusters.find((x) => x.id === id);
+    if (a) pushToast({ type: a.status === "active" ? "warn" : "success", title: `${a.name} ${a.status === "active" ? "suspended" : "reactivated"}`, body: a.status === "active" ? "Their queue access has been revoked." : "Queue access has been restored." });
+  };
+
+  const togglePolicyholderStatus = (id) => {
+    setPolicyholders((prev) => prev.map((p) => p.id === id ? { ...p, status: p.status === "active" ? "inactive" : "active" } : p));
+    const p = policyholders.find((x) => x.id === id);
+    if (p) pushToast({ type: p.status === "active" ? "warn" : "success", title: `${p.name} ${p.status === "active" ? "suspended" : "reactivated"}` });
+  };
+
+  const addAdjuster = (form) => {
+    setAdjusters((prev) => [...prev, { id: uid("ADJ"), status: "active", joinedAt: NOW.toISOString().slice(0, 10), ...form }]);
+  };
+
+  const requestInfo = async (id, notes) => {
+    try {
+      const { claim } = await requestInfoRequest(id, notes);
+      setClaims((prev) => prev.map((c) => (c.id === id ? claim : c)));
+      pushToast({ type: "warn", title: `${id} flagged`, body: "Applicant has been notified to provide more info." });
+    } catch (err) {
+      pushToast({ type: "warn", title: "Couldn't flag claim", body: err.message });
+    }
+  };
+
+  const navAnchor = (id) => {
+    if (screen === "landing") {
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      setScrollTarget(id);
+      setScreen("landing");
+    }
+  };
+
+  const siteNav = {
+    onNavAnchor: navAnchor,
+    onDevelopers: () => setScreen("developers"),
+    onGetStarted: () => { setSignupRole("applicant"); setScreen("signup"); },
+    onLogin: () => setScreen("login"),
+    onHome: () => { setScrollTarget(null); setScreen("landing"); },
+    onFaq: () => setScreen("faq"),
+    onBlog: () => setScreen("blog"),
+    onPrivacy: () => setScreen("privacy"),
+    onTerms: () => setScreen("terms"),
+  };
+  const goSignupAsAdjuster = () => { setSignupRole("admin"); setScreen("signup"); };
+
+  if (!sessionChecked) {
+    return (
+      <>
+        <div className="min-h-screen flex items-center justify-center bg-white">
+          <div className="w-8 h-8 border-2 border-bearing-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+        <Toast toasts={toasts} />
+      </>
+    );
   }
-}
 
-/**
- * POST /api/auth/forgot-password
- * Body: { email }
- * Generates + emails an OTP for resetting the password. Always responds
- * with a generic success message, even if the email isn't registered —
- * this avoids revealing which emails have accounts.
- */
-async function forgotPassword(req, res) {
-  try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ message: "Email is required." });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-
-    if (user) {
-      const otp = generateOtp();
-      user.otpHash = hashOtp(otp);
-      user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-      user.otpAttempts = 0;
-      await user.save();
-      await sendPasswordResetEmail(user.email, otp);
-    }
-
-    // Same response whether or not the account exists.
-    return res.status(200).json({ message: "If an account exists for that email, a reset code has been sent." });
-  } catch (err) {
-    console.error("Forgot password error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
+  if (screen === "landing") {
+    return (
+      <>
+        <SiteNavContext.Provider value={siteNav}>
+          <Landing onGetStarted={siteNav.onGetStarted} onGetStartedAdjuster={goSignupAsAdjuster} onLogin={siteNav.onLogin} scrollTarget={scrollTarget} onScrolled={() => setScrollTarget(null)} />
+        </SiteNavContext.Provider>
+        <Toast toasts={toasts} />
+      </>
+    );
   }
-}
-
-/**
- * POST /api/auth/verify-reset-otp
- * Body: { email, otp }
- * Checks the OTP is valid WITHOUT clearing it yet — the person still needs
- * to submit a new password next, which re-checks the same code.
- */
-async function verifyResetOtp(req, res) {
-  try {
-    const { email, otp } = req.body;
-    if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required." });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
-      return res.status(400).json({ message: "No pending password reset for this account." });
-    }
-
-    if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(400).json({ message: "Code has expired. Please request a new one." });
-    }
-
-    if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(429).json({ message: "Too many failed attempts. Please request a new code." });
-    }
-
-    if (!verifyOtp(otp, user.otpHash)) {
-      user.otpAttempts += 1;
-      await user.save();
-      return res.status(400).json({ message: "Incorrect code. Please try again." });
-    }
-
-    return res.status(200).json({ message: "Code verified." });
-  } catch (err) {
-    console.error("Verify reset OTP error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
+  if (screen === "developers") {
+    return <><SiteNavContext.Provider value={siteNav}><Developers /></SiteNavContext.Provider><Toast toasts={toasts} /></>;
   }
-}
-
-/**
- * POST /api/auth/reset-password
- * Body: { email, otp, newPassword }
- * Re-checks the OTP (same as verify-reset-otp) and, if still valid,
- * updates the password and clears the OTP fields.
- */
-async function resetPassword(req, res) {
-  try {
-    const { email, otp, newPassword } = req.body;
-    if (!email || !otp || !newPassword) {
-      return res.status(400).json({ message: "Email, code, and new password are required." });
-    }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters." });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
-      return res.status(400).json({ message: "No pending password reset for this account." });
-    }
-    if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
-      await user.save();
-      return res.status(400).json({ message: "Code has expired. Please request a new one." });
-    }
-    if (!verifyOtp(otp, user.otpHash)) {
-      user.otpAttempts += 1;
-      await user.save();
-      return res.status(400).json({ message: "Incorrect code. Please try again." });
-    }
-
-    user.password = await bcrypt.hash(newPassword, 10);
-    user.otpHash = null;
-    user.otpExpiresAt = null;
-    user.otpAttempts = 0;
-    await user.save();
-
-    return res.status(200).json({ message: "Password reset successful. You can now log in." });
-  } catch (err) {
-    console.error("Reset password error:", err);
-    return res.status(500).json({ message: "Something went wrong. Please try again." });
+  if (screen === "faq") {
+    return <><SiteNavContext.Provider value={siteNav}><Faq /></SiteNavContext.Provider><Toast toasts={toasts} /></>;
   }
-}
+  if (screen === "blog") {
+    return <><SiteNavContext.Provider value={siteNav}><Blog /></SiteNavContext.Provider><Toast toasts={toasts} /></>;
+  }
+  if (screen === "privacy") {
+    return <><SiteNavContext.Provider value={siteNav}><Privacy /></SiteNavContext.Provider><Toast toasts={toasts} /></>;
+  }
+  if (screen === "terms") {
+    return <><SiteNavContext.Provider value={siteNav}><Terms /></SiteNavContext.Provider><Toast toasts={toasts} /></>;
+  }
+  const handleGoogleAuth = (mode, role) => {
+    pendingGoogleRoleRef.current = role || "applicant";
+    const opened = promptGoogleSignIn();
+    if (!opened) {
+      pushToast({ type: "warn", title: "Google sign-in unavailable", body: "Please check your internet connection and try again." });
+    }
+  };
 
-module.exports = { signup, login, verifyOtpHandler, verifySignupOtp, resendOtp, me, googleAuth, forgotPassword, verifyResetOtp, resetPassword };
+  if (screen === "signup") {
+    return (
+      <>
+      <SignUp
+        initialRole={signupRole}
+        onGoLogin={() => setScreen("login")}
+        onSubmit={async (form) => {
+          setAuthLoading(true);
+          setAuthError("");
+          try {
+            const res = await signupRequest(form);
+            // First-time verification: an OTP was just emailed. Don't send
+            // them to the login screen yet — the account can't log in
+            // until this code is entered.
+            setPendingEmail(res.email || form.email);
+            setPendingRemember(!!form.remember);
+            setOtpResendStatus("");
+            setScreen("signup-verify");
+          } catch (err) {
+            pushToast({ type: "warn", title: "Sign up failed", body: err.message });
+          } finally {
+            setAuthLoading(false);
+          }
+        }}
+        onGoogleAuth={handleGoogleAuth}
+        loading={authLoading}
+      />
+      <Toast toasts={toasts} />
+      </>
+    );
+  }
+  if (screen === "login") {
+    return (
+      <>
+      <Login
+        onGoSignup={() => setScreen("signup")}
+        onSubmit={async (form) => {
+          setAuthLoading(true);
+          setAuthError("");
+          try {
+            await loginRequest(form.email, form.password);
+            setPendingEmail(form.email);
+            setPendingRole(form.role);
+            setPendingRemember(form.remember);
+            setOtpResendStatus("");
+            setScreen("login-verify");
+          } catch (err) {
+            if (err.requiresSignupVerification) {
+              // Account was never verified after signup — a fresh code was
+              // already sent server-side. Route into that flow instead of
+              // just showing an error.
+              setPendingEmail(err.email || form.email);
+              setPendingRemember(form.remember);
+              setOtpResendStatus("");
+              pushToast({ type: "warn", title: "Verify your email", body: "We've sent a new verification code — please verify before logging in." });
+              setScreen("signup-verify");
+            } else {
+              setAuthError(err.message);
+            }
+          } finally {
+            setAuthLoading(false);
+          }
+        }}
+        onGoSuperAdmin={() => setScreen("superadmin-login")}
+        onForgotPassword={() => setScreen("forgot-password")}
+        onGoogleAuth={handleGoogleAuth}
+        loading={authLoading}
+        error={authError}
+      />
+      <Toast toasts={toasts} />
+      </>
+    );
+  }
+  if (screen === "login-verify") {
+    return (
+      <>
+      <VerifyEmail
+        email={pendingEmail}
+        onBack={() => { setAuthError(""); setScreen("login"); }}
+        loading={authLoading}
+        error={authError}
+        resendStatus={otpResendStatus}
+        onVerified={async (otp) => {
+          setAuthLoading(true);
+          setAuthError("");
+          try {
+            const res = await verifyOtpRequest(pendingEmail, otp, pendingRemember);
+            localStorage.setItem("rt_token", res.token);
+            enterApp(res.user.role, res.user);
+          } catch (err) {
+            setAuthError(err.message);
+          } finally {
+            setAuthLoading(false);
+          }
+        }}
+        onResend={async () => {
+          setOtpResendStatus("Sending…");
+          try {
+            await resendOtpRequest(pendingEmail);
+            setOtpResendStatus("A new code has been sent.");
+          } catch (err) {
+            setOtpResendStatus(err.message);
+          }
+        }}
+      />
+      <Toast toasts={toasts} />
+      </>
+    );
+  }
+  if (screen === "signup-verify") {
+    return (
+      <>
+      <VerifyEmail
+        email={pendingEmail}
+        onBack={() => { setAuthError(""); setScreen("login"); }}
+        loading={authLoading}
+        error={authError}
+        resendStatus={otpResendStatus}
+        onVerified={async (otp) => {
+          setAuthLoading(true);
+          setAuthError("");
+          try {
+            const res = await verifySignupOtpRequest(pendingEmail, otp, pendingRemember);
+            if (res.pendingApproval) {
+              pushToast({ type: "success", title: "Email verified", body: res.message });
+              setScreen("login");
+            } else {
+              localStorage.setItem("rt_token", res.token);
+              enterApp(res.user.role, res.user);
+              pushToast({ type: "success", title: "Welcome to RightTrack", body: `Signed in as ${res.user.fullName || res.user.email}.` });
+            }
+          } catch (err) {
+            setAuthError(err.message);
+          } finally {
+            setAuthLoading(false);
+          }
+        }}
+        onResend={async () => {
+          setOtpResendStatus("Sending…");
+          try {
+            await resendOtpRequest(pendingEmail);
+            setOtpResendStatus("A new code has been sent.");
+          } catch (err) {
+            setOtpResendStatus(err.message);
+          }
+        }}
+      />
+      <Toast toasts={toasts} />
+      </>
+    );
+  }
+  if (screen === "forgot-password") {
+    return <><ForgotPassword onBack={() => setScreen("login")} onDone={() => setScreen("login")} /><Toast toasts={toasts} /></>;
+  }
+  if (screen === "superadmin-login") {
+    return <><SuperAdminLogin onBack={() => setScreen("login")} onSubmit={() => enterApp("superadmin")} /><Toast toasts={toasts} /></>;
+  }
+
+  const selectedClaim = claims.find((c) => c.id === selected);
+  const adjusterClaims = claims.filter((c) => c.insurer === profile.orgName);
+  const isOwnClaim = !selectedClaim || selectedClaim.insurer === profile.orgName;
+  const notifClaims = role === "admin" ? adjusterClaims : claims;
+  const notifCount = notifClaims.filter((c) => c.status === "action_required").length + (role === "applicant" ? myPolicies.length : 0);
+
+  let title = "Dashboard", subtitle = "";
+  if (view === "new") title = "New Claim";
+  if (view === "claims") title = "My Claims";
+  if (view === "queue") title = "Claims Queue";
+  if (view === "policies") title = "Manage Policies";
+  if (view === "api") title = "Developer / API";
+  if (view === "billing") title = "Plans & Billing";
+  if (view === "sa-dashboard") title = "Super Admin Overview";
+  if (view === "sa-claims") title = "All Claims";
+  if (view === "sa-adjusters") title = "Adjusters";
+  if (view === "sa-policyholders") title = "Policyholders";
+  if (view === "settings") title = "Settings";
+  if (view === "detail" && selectedClaim) { title = selectedClaim.id; subtitle = selectedClaim.category; }
+
+  return (
+    <div className="min-h-screen flex bg-[#f5f6fa]">
+      <Sidebar role={role} plan={plan} active={view} onNav={(v) => { setView(v); setSelected(null); }} onExit={exitApp} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
+      <div className="flex-1 w-full min-w-0 flex flex-col">
+        <Topbar title={title} subtitle={subtitle} role={role} plan={plan} onMenu={() => setMobileOpen(true)} notifCount={notifCount} onBell={() => setNotifOpen((o) => !o)} onSettings={() => setView("settings")} avatarUrl={profile.avatarUrl} profile={profile} />
+        <main className="flex-1 p-4 sm:p-8">
+          {role === "applicant" && view === "dashboard" && <ApplicantDashboard claims={claims} onNav={setView} onOpenClaim={openClaim} profile={profile} />}
+          {role === "applicant" && view === "new" && <NewClaimWizard claims={claims} onSubmitClaim={addClaim} pushToast={pushToast} />}
+          {role === "applicant" && view === "claims" && <MyClaims claims={claims} onOpenClaim={openClaim} onNav={setView} />}
+          {role === "applicant" && view === "detail" && selectedClaim && <ClaimDetailApplicant claim={selectedClaim} onBack={() => setView("claims")} onReupload={reupload} onRate={rate} pushToast={pushToast} currentUserId={profile.id} />}
+          {role === "admin" && view === "dashboard" && <AdminDashboard claims={adjusterClaims} onOpenClaim={openClaim} profile={profile} />}
+          {role === "admin" && view === "queue" && <ClaimsQueue claims={adjusterClaims} onOpenClaim={openClaim} plan={plan} onGoBilling={() => setView("billing")} pushToast={pushToast} insurer={profile.orgName} />}
+          {role === "admin" && view === "policies" && <ManagePolicies pushToast={pushToast} />}
+          {role === "admin" && view === "detail" && selectedClaim && isOwnClaim && <ClaimReview claim={selectedClaim} onBack={() => setView("queue")} onStartReview={startReview} onDecision={decide} onRequestInfo={requestInfo} pushToast={pushToast} currentUserId={profile.id} />}
+          {role === "admin" && view === "billing" && <Billing plan={plan} onUpgrade={upgradePlan} onDowngrade={downgradePlan} onStartTrial={startTrial} />}
+          {role === "superadmin" && view === "sa-dashboard" && <SuperAdminDashboard claims={claims} adjusters={adjusters} policyholders={policyholders} onOpenClaim={openClaim} onNav={setView} />}
+          {role === "superadmin" && view === "sa-claims" && <SuperAdminClaims claims={claims} adjusters={adjusters} onOpenClaim={openClaim} />}
+          {role === "superadmin" && view === "sa-adjusters" && <SuperAdminAdjusters adjusters={adjusters} claims={claims} onToggleStatus={toggleAdjusterStatus} onAddAdjuster={addAdjuster} pushToast={pushToast} />}
+          {role === "superadmin" && view === "sa-policyholders" && <SuperAdminPolicyholders policyholders={policyholders} claims={claims} onToggleStatus={togglePolicyholderStatus} pushToast={pushToast} onOpenClaim={openClaim} />}
+          {role === "superadmin" && view === "detail" && selectedClaim && <ClaimReview claim={selectedClaim} onBack={() => setView("sa-claims")} onDecision={decide} onRequestInfo={requestInfo} pushToast={pushToast} currentUserId={profile.id} readOnly />}
+          {view === "api" && <ApiDocs role={role} plan={plan} onGoBilling={() => setView("billing")} pushToast={pushToast} />}
+          {view === "settings" && <Settings role={role} profile={profile} onUpdateProfile={updateProfile} pushToast={pushToast} />}
+        </main>
+      </div>
+      <Toast toasts={toasts} />
+      <NotifPanel open={notifOpen} onClose={() => setNotifOpen(false)} claims={notifClaims} policies={role === "applicant" ? myPolicies : []} />
+    </div>
+  );
+}
