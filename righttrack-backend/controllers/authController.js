@@ -2,6 +2,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/User");
+const Policy = require("../models/Policy");
 const { generateOtp, hashOtp, verifyOtp } = require("../utils/otp");
 const { sendOtpEmail, sendPasswordResetEmail } = require("../utils/sendEmail");
 
@@ -34,6 +35,31 @@ async function signup(req, res) {
     }
     console.log("No existing account found — proceeding to create.");
 
+    // Policy Holders must supply a real, insurer-issued policy number —
+    // checked against the Policy records adjusters have registered, not
+    // just accepted as a free-typed string.
+    let matchedPolicy = null;
+    if ((role || "applicant") === "applicant") {
+      if (!policyNumber || !policyNumber.trim()) {
+        return res.status(400).json({ message: "Policy number is required to sign up as a Policy Holder." });
+      }
+
+      const candidates = await Policy.find({ policyId: policyNumber.trim(), isActive: true });
+      if (candidates.length === 0) {
+        return res.status(400).json({ message: "We couldn't find that policy number. Please check it or contact your insurer." });
+      }
+      if (candidates.length > 1) {
+        // Extremely unlikely (two insurers issued the same ID), but don't
+        // guess which one is theirs.
+        return res.status(400).json({ message: "That policy number matches more than one record. Please contact support." });
+      }
+
+      matchedPolicy = candidates[0];
+      if (matchedPolicy.policyholderEmail && matchedPolicy.policyholderEmail !== normalizedEmail) {
+        return res.status(400).json({ message: "This policy number is already registered to a different account." });
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await User.create({
@@ -48,6 +74,14 @@ async function signup(req, res) {
       licenseNumber,
       claimCategories: role === "admin" ? (Array.isArray(claimCategories) ? claimCategories : []) : undefined,
     });
+
+    // Claim the policy for this email if it wasn't already assigned to
+    // someone (an adjuster may have registered it before this signup, with
+    // the policyholderEmail left unset).
+    if (matchedPolicy && !matchedPolicy.policyholderEmail) {
+      matchedPolicy.policyholderEmail = normalizedEmail;
+      await matchedPolicy.save();
+    }
 
     return res.status(201).json({
       message: role === "admin"
