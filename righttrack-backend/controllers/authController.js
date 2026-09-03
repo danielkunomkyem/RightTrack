@@ -72,7 +72,7 @@ function issueToken(user, remember = false) {
 /**
  * POST /api/auth/signup
  * Body matches your SignUp form in Auth.jsx: { role, fullName, email, password,
- * policyNumber?, orgName?, cac?, organizationLicenseNumber?, licenseNumber? }
+ * acceptedTerms, orgName?, cac?, organizationLicenseNumber?, licenseNumber? }
  * Creates the account. Does NOT log them in — your frontend already routes
  * signup -> VerifyEmail -> enterApp, so this just creates the user record.
  */
@@ -83,6 +83,7 @@ async function signup(req, res) {
       fullName,
       email,
       password,
+      acceptedTerms,
       policyNumber,
       orgName,
       cac,
@@ -101,6 +102,9 @@ async function signup(req, res) {
     }
     if (String(password).length < 8) {
       return res.status(400).json({ message: "Password must be at least 8 characters." });
+    }
+    if (acceptedTerms !== true) {
+      return res.status(400).json({ message: "You must accept the Terms of Service and Privacy Policy." });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
@@ -178,6 +182,8 @@ async function signup(req, res) {
       fullName: fullName.trim(),
       email: normalizedEmail,
       password: hashedPassword,
+      termsAcceptedAt: new Date(),
+      privacyAcceptedAt: new Date(),
       policyNumber,
       organization: organization?._id || null,
       orgName: organization?.name,
@@ -461,8 +467,8 @@ async function me(req, res) {
  * POST /api/auth/google
  * Body: { credential, role, remember }
  * `credential` is the ID token Google's Sign-In button hands back to the frontend.
- * We verify it server-side, then find-or-create the account and log them in
- * directly — no password, no OTP, since Google has already verified the email.
+ * We verify it server-side, then use it only to log in an existing, verified
+ * policyholder. Initial registration must use the signup form and email OTP.
  */
 async function googleAuth(req, res) {
   try {
@@ -490,21 +496,26 @@ async function googleAuth(req, res) {
     }
 
     if (!user) {
-      if (role !== "applicant") {
-        return res.status(400).json({ message: "Only Policy Holders can create an account with Google. Adjusters must submit the full verification form." });
-      }
-      user = await User.create({
-        role: "applicant",
-        fullName: payload.name || email.split("@")[0],
-        email,
-        isGoogleAccount: true,
-        isVerified: true,
+      return res.status(404).json({
+        message: "Create and verify your Policy Holder account with the signup form before using Google login.",
       });
-    } else if (!user.isGoogleAccount) {
-      // An account with this email already exists via normal signup.
-      // Link it: allow Google sign-in for it going forward too.
+    }
+
+    if (user.role !== "applicant") {
+      return res.status(403).json({ message: "Adjusters must log in with their work email, password, and OTP." });
+    }
+
+    if (!user.isVerified) {
+      return res.status(403).json({
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Verify your email with the sign-up OTP before using Google login.",
+        email: user.email,
+      });
+    }
+
+    if (!user.isGoogleAccount) {
+      // Link Google only after the original email/OTP signup has been completed.
       user.isGoogleAccount = true;
-      user.isVerified = true;
       await user.save();
     }
 

@@ -6,12 +6,12 @@ import { forgotPasswordRequest, verifyResetOtpRequest, resetPasswordRequest } fr
 
 function AuthShell({ children, wide }) {
   return (
-    <div className="min-h-[100dvh] flex items-center justify-center p-4 relative overflow-hidden bg-navy-950">
+    <div className="min-h-[100dvh] flex justify-center p-4 relative overflow-x-hidden bg-navy-950">
       <div className="absolute inset-0">
         <img src="/bg-compass.jpg" alt="" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-br from-navy-950/90 via-navy-950/90 to-navy-950/95" />
       </div>
-      <div className={`relative w-full ${wide ? "max-w-lg" : "max-w-md"} bg-white rounded-3xl shadow-pop p-6 sm:p-8 animate-fadein max-h-[92dvh] overflow-y-auto`}>{children}</div>
+      <div className={`relative self-start my-auto w-full ${wide ? "max-w-lg" : "max-w-md"} bg-white rounded-3xl shadow-pop p-6 sm:p-8 animate-fadein`}>{children}</div>
     </div>
   );
 }
@@ -120,18 +120,12 @@ const LICENSE_PATTERN = /^[A-Za-z]{2,}[-\s]?[A-Za-z0-9-]{3,}$/;
 const CAC_PATTERN = /^(RC|BN|IT)\s?\d{5,7}$/i;
 const ORGANIZATION_LICENSE_PATTERN = /^[A-Za-z]{2,}(?:[-/\s]?[A-Za-z0-9]+){1,}$/;
 
-export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "applicant", loading }) {
+export function SignUp({ onSubmit, onGoLogin, onTerms, onPrivacy, initialRole = "applicant", loading }) {
   const [role, setRole] = useState(initialRole);
   const [policyHolder, setPolicyHolder] = useState(emptyPolicyHolder);
   const [adjuster, setAdjuster] = useState(emptyAdjuster);
-  const [remember, setRemember] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-
-  const handleGoogleClick = () => {
-    setGoogleLoading(true);
-    setTimeout(() => { setGoogleLoading(false); onGoogleAuth?.("signup", role); }, 900);
-  };
 
   const form = role === "applicant" ? policyHolder : adjuster;
   const setForm = role === "applicant" ? setPolicyHolder : setAdjuster;
@@ -143,6 +137,7 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
   if (!form.email.includes("@")) errors.push("Enter a valid email address.");
   if (form.password.length < 8) errors.push("Password must be at least 8 characters.");
   if (form.password !== form.confirm) errors.push("Password and Confirm Password don't match.");
+  if (!acceptedTerms) errors.push("Accept the Terms of Service and Privacy Policy.");
   if (role === "admin") {
     if (!adjuster.orgName.trim()) errors.push("Enter your organization's name.");
     if (!adjuster.licenseNumber.trim()) {
@@ -170,7 +165,7 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
     e.preventDefault();
     setSubmitted(true);
     if (!canSubmit) return;
-    onSubmit({ role, remember, ...form });
+    onSubmit({ role, acceptedTerms, ...form });
   };
 
   return (
@@ -295,10 +290,22 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
           placeholder="Confirm password"
         />
 
-        <label className="flex items-center gap-2 text-sm text-ink-700">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="rounded border-ink-900/20" />
-          Remember me
-        </label>
+        <div className="flex items-start gap-2 text-sm text-ink-700">
+          <input
+            id="signup-consent"
+            type="checkbox"
+            required
+            checked={acceptedTerms}
+            onChange={(e) => setAcceptedTerms(e.target.checked)}
+            className="rounded border-ink-900/20 mt-0.5"
+          />
+          <label htmlFor="signup-consent" className="leading-snug">
+            I agree to the{" "}
+            <button type="button" onClick={onTerms} className="font-semibold text-bearing-600 hover:underline">Terms of Service</button>
+            {" "}and{" "}
+            <button type="button" onClick={onPrivacy} className="font-semibold text-bearing-600 hover:underline">Privacy Policy</button>.
+          </label>
+        </div>
 
         {submitted && errors.length > 0 && (
           <div className="text-xs font-medium text-red-600 bg-red-50 ring-1 ring-red-200 rounded-lg px-3 py-2 space-y-1">
@@ -309,8 +316,6 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
         <button type="submit" disabled={loading} className="btn-primary w-full disabled:opacity-40 disabled:cursor-not-allowed">
           {loading ? "Creating account…" : `Sign up as ${role === "applicant" ? "Policy Holder" : "Adjuster"}`}
         </button>
-        <div className="flex items-center gap-3 text-xs text-ink-300"><div className="h-px bg-ink-900/10 flex-1" />OR<div className="h-px bg-ink-900/10 flex-1" /></div>
-        <GoogleButton onClick={handleGoogleClick} loading={googleLoading} />
       </form>
       <p className="text-sm text-ink-500 text-center mt-6">
         Already have an account? <button onClick={onGoLogin} className="font-semibold text-bearing-600 hover:underline">Log in</button>
@@ -371,8 +376,12 @@ export function Login({ onSubmit, onGoSignup, onGoSuperAdmin, onForgotPassword, 
         <button type="submit" disabled={!canSubmit} className="btn-primary w-full disabled:opacity-40 disabled:cursor-not-allowed">
           {loading ? "Checking…" : `Log in as ${role === "applicant" ? "Policy Holder" : "Adjuster"}`}
         </button>
-        <div className="flex items-center gap-3 text-xs text-ink-300"><div className="h-px bg-ink-900/10 flex-1" />OR<div className="h-px bg-ink-900/10 flex-1" /></div>
-        <GoogleButton onClick={handleGoogleClick} loading={googleLoading} />
+        {role === "applicant" && (
+          <>
+            <div className="flex items-center gap-3 text-xs text-ink-300"><div className="h-px bg-ink-900/10 flex-1" />OR<div className="h-px bg-ink-900/10 flex-1" /></div>
+            <GoogleButton onClick={handleGoogleClick} loading={googleLoading} />
+          </>
+        )}
       </form>
       <p className="text-sm text-ink-500 text-center mt-6">
         New to RightTrack? <button onClick={onGoSignup} className="font-semibold text-bearing-600 hover:underline">Sign up</button>

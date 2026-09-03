@@ -331,6 +331,8 @@ export default function App() {
       <SignUp
         initialRole={signupRole}
         onGoLogin={() => setScreen("login")}
+        onTerms={() => setScreen("terms")}
+        onPrivacy={() => setScreen("privacy")}
         onSubmit={async (form) => {
           setAuthLoading(true);
           setAuthError("");
@@ -344,7 +346,7 @@ export default function App() {
             if (form.role === "applicant") {
               setPendingEmail(res.user.email);
               setPendingRole("applicant");
-              setPendingRemember(form.remember);
+              setPendingRemember(false);
               setOtpResendStatus(res.verificationEmailSent === false ? "Request a new code to retry email delivery." : "");
               setScreen("signup-verify");
             } else {
@@ -356,7 +358,6 @@ export default function App() {
             setAuthLoading(false);
           }
         }}
-        onGoogleAuth={handleGoogleAuth}
         loading={authLoading}
       />
       <Toast toasts={toasts} />

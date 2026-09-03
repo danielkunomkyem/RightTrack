@@ -10,6 +10,10 @@ const userSchema = new mongoose.Schema(
     },
     isGoogleAccount: { type: Boolean, default: false },
 
+    // Recorded when the user explicitly accepts the signup agreements.
+    termsAcceptedAt: { type: Date, default: null },
+    privacyAcceptedAt: { type: Date, default: null },
+
     role: { type: String, enum: ["applicant", "admin", "superadmin"], default: "applicant" },
 
     // Policy holder-specific
