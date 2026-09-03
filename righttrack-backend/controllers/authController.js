@@ -2,96 +2,295 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/User");
-const Policy = require("../models/Policy");
+const Organization = require("../models/Organization");
 const { generateOtp, hashOtp, verifyOtp } = require("../utils/otp");
-const { sendOtpEmail, sendPasswordResetEmail } = require("../utils/sendEmail");
+const { sendOtpEmail, sendSignupVerificationEmail, sendPasswordResetEmail } = require("../utils/sendEmail");
+const {
+  normalizeOrganizationName,
+  normalizeIdentifier,
+  validateAdjusterApplication,
+} = require("../utils/verification");
 
 const OTP_EXPIRY_MINUTES = 5;
 const MAX_OTP_ATTEMPTS = 5;
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+function publicUser(user) {
+  return {
+    id: user._id,
+    fullName: user.fullName,
+    email: user.email,
+    role: user.role,
+    policyNumber: user.policyNumber || "",
+    orgName: user.organization?.name || user.orgName || "",
+    organizationId: user.organization?._id || user.organization || null,
+    licenseNumber: user.licenseNumber || "",
+    verificationStatus: user.verificationStatus,
+  };
+}
+
+async function accountBlockMessage(user) {
+  if (user.role !== "admin") return null;
+
+  const organization = user.organization
+    ? await Organization.findById(user.organization).select("status verificationNote")
+    : null;
+
+  if (!organization) return "Your adjuster account is not linked to a verified organization. Contact support.";
+  if (organization.status === "pending") return "Your organization is still awaiting Super Admin verification.";
+  if (organization.status === "rejected") return organization.verificationNote || "Your organization's verification application was rejected.";
+  if (organization.status === "suspended") return "Your organization's access is currently suspended. Contact support.";
+  if (user.verificationStatus === "pending") return "Your organization is approved, but your adjuster credentials are still awaiting verification.";
+  if (user.verificationStatus === "rejected") return user.verificationNote || "Your adjuster account application was rejected.";
+  if (user.verificationStatus === "suspended") return user.verificationNote || "Your adjuster account is currently suspended.";
+  if (user.verificationStatus !== "approved") return "Your adjuster account is not approved.";
+  return null;
+}
+
+function setOtp(user, otp, purpose) {
+  user.otpHash = hashOtp(otp);
+  user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+  user.otpAttempts = 0;
+  user.otpPurpose = purpose;
+}
+
+function clearOtp(user) {
+  user.otpHash = null;
+  user.otpExpiresAt = null;
+  user.otpAttempts = 0;
+  user.otpPurpose = null;
+}
+
+function issueToken(user, remember = false) {
+  return jwt.sign(
+    { id: user._id, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: remember ? "30d" : "1d" }
+  );
+}
+
 /**
  * POST /api/auth/signup
  * Body matches your SignUp form in Auth.jsx: { role, fullName, email, password,
- * policyNumber?, orgName?, isRegisteredOrg?, cac?, licenseNumber? }
+ * policyNumber?, orgName?, cac?, organizationLicenseNumber?, licenseNumber? }
  * Creates the account. Does NOT log them in — your frontend already routes
  * signup -> VerifyEmail -> enterApp, so this just creates the user record.
  */
 async function signup(req, res) {
-  console.log("SIGNUP endpoint hit. Body:", req.body);
   try {
-    const { role, fullName, email, password, policyNumber, orgName, isRegisteredOrg, cac, licenseNumber, claimCategories } = req.body;
+    const {
+      role,
+      fullName,
+      email,
+      password,
+      policyNumber,
+      orgName,
+      cac,
+      organizationLicenseNumber,
+      licenseNumber,
+      claimCategories,
+    } = req.body;
+
+    const requestedRole = role || "applicant";
+    if (!["applicant", "admin"].includes(requestedRole)) {
+      return res.status(400).json({ message: "Choose either a Policy Holder or Adjuster account." });
+    }
 
     if (!fullName || !email || !password) {
       return res.status(400).json({ message: "Full name, email, and password are required." });
     }
+    if (String(password).length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters." });
+    }
 
     const normalizedEmail = email.toLowerCase().trim();
-    console.log("Checking for existing user with normalized email:", normalizedEmail);
     const existing = await User.findOne({ email: normalizedEmail });
     if (existing) {
-      console.log("Found existing account:", existing.email, "| id:", existing._id);
       return res.status(409).json({ message: "An account with this email already exists." });
     }
-    console.log("No existing account found — proceeding to create.");
 
-    // Policy Holders must supply a real, insurer-issued policy number —
-    // checked against the Policy records adjusters have registered, not
-    // just accepted as a free-typed string.
-    let matchedPolicy = null;
-    if ((role || "applicant") === "applicant") {
-      if (!policyNumber || !policyNumber.trim()) {
-        return res.status(400).json({ message: "Policy number is required to sign up as a Policy Holder." });
+    let organization = null;
+    let categories = [];
+    if (requestedRole === "admin") {
+      const validation = validateAdjusterApplication({
+        orgName,
+        cac,
+        organizationLicenseNumber,
+        licenseNumber,
+        claimCategories,
+      });
+      if (validation.errors.length > 0) {
+        return res.status(400).json({ message: validation.errors[0], errors: validation.errors });
+      }
+      categories = validation.categories;
+
+      const normalizedName = normalizeOrganizationName(orgName);
+      const normalizedCac = normalizeIdentifier(cac);
+      const normalizedOrgLicense = normalizeIdentifier(organizationLicenseNumber);
+
+      organization = await Organization.findOne({
+        $or: [
+          { normalizedName },
+          { cacNumber: normalizedCac },
+          { naicomLicenseNumber: normalizedOrgLicense },
+        ],
+      });
+
+      if (organization) {
+        const detailsMatch = organization.normalizedName === normalizedName
+          && organization.cacNumber === normalizedCac
+          && organization.naicomLicenseNumber === normalizedOrgLicense;
+        if (!detailsMatch) {
+          return res.status(409).json({
+            message: "Those organization details conflict with an existing registration. Ask your organization administrator or RightTrack support to invite you.",
+          });
+        }
+        if (["rejected", "suspended"].includes(organization.status)) {
+          return res.status(403).json({ message: "This organization cannot accept new adjuster applications. Contact support." });
+        }
+      } else {
+        organization = await Organization.create({
+          name: orgName.trim().replace(/\s+/g, " "),
+          normalizedName,
+          cacNumber: normalizedCac,
+          naicomLicenseNumber: normalizedOrgLicense,
+          claimCategories: categories,
+          status: "pending",
+          auditTrail: [{ action: "submitted", note: `Submitted by ${normalizedEmail}` }],
+        });
       }
 
-      const candidates = await Policy.find({ policyId: policyNumber.trim(), isActive: true });
-      if (candidates.length === 0) {
-        return res.status(400).json({ message: "We couldn't find that policy number. Please check it or contact your insurer." });
-      }
-      if (candidates.length > 1) {
-        // Extremely unlikely (two insurers issued the same ID), but don't
-        // guess which one is theirs.
-        return res.status(400).json({ message: "That policy number matches more than one record. Please contact support." });
-      }
-
-      matchedPolicy = candidates[0];
-      if (matchedPolicy.policyholderEmail && matchedPolicy.policyholderEmail !== normalizedEmail) {
-        return res.status(400).json({ message: "This policy number is already registered to a different account." });
+      const duplicateStaffId = await User.findOne({
+        role: "admin",
+        organization: organization._id,
+        licenseNumber: normalizeIdentifier(licenseNumber),
+      });
+      if (duplicateStaffId) {
+        return res.status(409).json({ message: "That staff or adjuster ID is already registered for this organization." });
       }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const signupOtp = requestedRole === "applicant" ? generateOtp() : null;
 
     const user = await User.create({
-      role: role || "applicant",
-      fullName,
-      email: email.toLowerCase().trim(),
+      role: requestedRole,
+      fullName: fullName.trim(),
+      email: normalizedEmail,
       password: hashedPassword,
       policyNumber,
-      orgName,
-      isRegisteredOrg,
-      cac,
-      licenseNumber,
-      claimCategories: role === "admin" ? (Array.isArray(claimCategories) ? claimCategories : []) : undefined,
+      organization: organization?._id || null,
+      orgName: organization?.name,
+      isRegisteredOrg: requestedRole === "admin",
+      cac: organization?.cacNumber,
+      organizationLicenseNumber: organization?.naicomLicenseNumber,
+      licenseNumber: requestedRole === "admin" ? normalizeIdentifier(licenseNumber) : undefined,
+      claimCategories: requestedRole === "admin" ? categories : undefined,
+      verificationHistory: requestedRole === "admin"
+        ? [{ status: "pending", note: "Adjuster credentials submitted for review." }]
+        : [],
+      otpHash: signupOtp ? hashOtp(signupOtp) : null,
+      otpExpiresAt: signupOtp ? new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000) : null,
+      otpAttempts: 0,
+      otpPurpose: signupOtp ? "signup" : null,
     });
 
-    // Claim the policy for this email if it wasn't already assigned to
-    // someone (an adjuster may have registered it before this signup, with
-    // the policyholderEmail left unset).
-    if (matchedPolicy && !matchedPolicy.policyholderEmail) {
-      matchedPolicy.policyholderEmail = normalizedEmail;
-      await matchedPolicy.save();
+    if (organization && !organization.submittedBy) {
+      organization.submittedBy = user._id;
+      await organization.save();
+    }
+
+    let verificationEmailSent = null;
+    if (signupOtp) {
+      try {
+        await sendSignupVerificationEmail(user.email, signupOtp);
+        verificationEmailSent = true;
+      } catch (emailError) {
+        verificationEmailSent = false;
+        console.error("Signup verification delivery failed:", emailError.message);
+      }
     }
 
     return res.status(201).json({
-      message: role === "admin"
-        ? "Account created. Your License/Staff ID and CAC number are now awaiting Super Admin approval — you'll be able to log in once approved."
-        : "Account created.",
-      user: { id: user._id, fullName: user.fullName, email: user.email, role: user.role, verificationStatus: user.verificationStatus },
+      message: requestedRole === "admin"
+        ? organization.status === "approved"
+          ? "Application received. Your organization is approved; a Super Admin must now verify your staff credentials."
+          : "Application received. A Super Admin must approve the organization first, then verify your staff credentials."
+        : verificationEmailSent
+          ? "Account created. Enter the OTP sent to your email to verify your policyholder account."
+          : "Account created, but the verification email could not be delivered. Use Request a new one on the verification screen.",
+      user: publicUser(user),
+      organizationStatus: organization?.status,
+      verificationEmailSent,
     });
   } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ message: "That email, organization registration, or staff ID is already registered." });
+    }
     console.error("Signup error:", err);
     return res.status(500).json({ message: "Something went wrong. Please try again." });
+  }
+}
+
+async function verifySignupOtp(req, res) {
+  try {
+    const { email, otp, remember } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required." });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim(), role: "applicant" });
+    if (!user || user.isVerified || user.otpPurpose !== "signup" || !user.otpHash || !user.otpExpiresAt) {
+      return res.status(400).json({ message: "No pending policyholder verification was found." });
+    }
+    if (user.otpExpiresAt < new Date()) {
+      clearOtp(user);
+      await user.save();
+      return res.status(400).json({ message: "OTP has expired. Request a new code." });
+    }
+    if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
+      clearOtp(user);
+      await user.save();
+      return res.status(429).json({ message: "Too many failed attempts. Request a new code." });
+    }
+    if (!verifyOtp(otp, user.otpHash)) {
+      user.otpAttempts += 1;
+      await user.save();
+      return res.status(400).json({ message: "Incorrect OTP. Please try again." });
+    }
+
+    clearOtp(user);
+    user.isVerified = true;
+    await user.save();
+
+    return res.status(200).json({
+      message: "Policyholder email verified successfully.",
+      token: issueToken(user, remember),
+      user: publicUser(user),
+    });
+  } catch (err) {
+    console.error("Signup OTP verification error:", err);
+    return res.status(500).json({ message: "Something went wrong. Please try again." });
+  }
+}
+
+async function resendSignupOtp(req, res) {
+  try {
+    const email = (req.body.email || "").toLowerCase().trim();
+    const user = await User.findOne({ email, role: "applicant" });
+    if (!user || user.isVerified) {
+      return res.status(400).json({ message: "No unverified policyholder account was found." });
+    }
+
+    const otp = generateOtp();
+    setOtp(user, otp, "signup");
+    await user.save();
+    await sendSignupVerificationEmail(user.email, otp);
+
+    return res.status(200).json({ message: "A new policyholder verification code has been sent." });
+  } catch (err) {
+    console.error("Resend signup OTP error:", err);
+    return res.status(500).json({ message: "The verification email could not be sent. Please try again." });
   }
 }
 
@@ -101,9 +300,8 @@ async function signup(req, res) {
  * Verifies credentials, generates + emails an OTP, but does NOT log the user in yet.
  */
 async function login(req, res) {
-  console.log("LOGIN endpoint hit. Body:", req.body);
   try {
-    const { email, password } = req.body;
+    const { email, password, requestedRole } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required." });
@@ -111,33 +309,33 @@ async function login(req, res) {
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
     if (!user) {
-      console.log("No user found for email:", email);
       return res.status(401).json({ message: "Invalid email or password." });
     }
 
-    const passwordMatches = await bcrypt.compare(password, user.password);
+    const passwordMatches = user.password && await bcrypt.compare(password, user.password);
     if (!passwordMatches) {
-      console.log("Password did not match for:", email);
       return res.status(401).json({ message: "Invalid email or password." });
     }
 
-    if (user.verificationStatus === "pending") {
-      return res.status(403).json({ message: "Your adjuster account is still awaiting Super Admin approval. This usually takes 1–2 business days." });
+    if (requestedRole && user.role !== requestedRole) {
+      return res.status(403).json({ message: "This account is registered for a different account type." });
     }
-    if (user.verificationStatus === "rejected") {
-      return res.status(403).json({ message: user.verificationNote || "Your adjuster account application was not approved. Contact support for details." });
+    if (user.role === "applicant" && !user.isVerified) {
+      return res.status(403).json({
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Verify your email with the sign-up OTP before logging in.",
+        email: user.email,
+      });
     }
+
+    const blocked = await accountBlockMessage(user);
+    if (blocked) return res.status(403).json({ message: blocked });
 
     const otp = generateOtp();
-    console.log("Generated OTP for", email, ":", otp);
-    user.otpHash = hashOtp(otp);
-    user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-    user.otpAttempts = 0;
+    setOtp(user, otp, "login");
     await user.save();
-    console.log("User OTP fields saved. Calling sendOtpEmail...");
 
     await sendOtpEmail(user.email, otp);
-    console.log("sendOtpEmail call completed without throwing.");
 
     return res.status(200).json({
       message: "OTP sent to your registered email.",
@@ -163,22 +361,27 @@ async function verifyOtpHandler(req, res) {
     }
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
-      return res.status(400).json({ message: "No pending verification for this account." });
+    if (!user || user.otpPurpose !== "login" || !user.otpHash || !user.otpExpiresAt) {
+      return res.status(400).json({ message: "No pending login verification for this account." });
     }
 
     if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
+      clearOtp(user);
       await user.save();
       return res.status(400).json({ message: "OTP has expired. Please log in again." });
     }
 
     if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
+      clearOtp(user);
       await user.save();
       return res.status(429).json({ message: "Too many failed attempts. Please log in again." });
+    }
+
+    const blocked = await accountBlockMessage(user);
+    if (blocked) {
+      clearOtp(user);
+      await user.save();
+      return res.status(403).json({ message: blocked });
     }
 
     const isValid = verifyOtp(otp, user.otpHash);
@@ -189,27 +392,16 @@ async function verifyOtpHandler(req, res) {
     }
 
     // Success — clear OTP fields, mark verified, issue token
-    user.otpHash = null;
-    user.otpExpiresAt = null;
-    user.otpAttempts = 0;
+    clearOtp(user);
     user.isVerified = true;
     await user.save();
 
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: remember ? "30d" : "1d" }
-    );
+    const token = issueToken(user, remember);
 
     return res.status(200).json({
       message: "Login successful.",
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
+      user: publicUser(user),
     });
   } catch (err) {
     console.error("OTP verification error:", err);
@@ -227,14 +419,12 @@ async function resendOtp(req, res) {
     const { email } = req.body;
     const user = await User.findOne({ email: (email || "").toLowerCase().trim() });
 
-    if (!user) {
-      return res.status(400).json({ message: "No pending verification for this account." });
+    if (!user || user.otpPurpose !== "login") {
+      return res.status(400).json({ message: "No pending login verification for this account." });
     }
 
     const otp = generateOtp();
-    user.otpHash = hashOtp(otp);
-    user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-    user.otpAttempts = 0;
+    setOtp(user, otp, "login");
     await user.save();
 
     await sendOtpEmail(user.email, otp);
@@ -254,11 +444,13 @@ async function resendOtp(req, res) {
  */
 async function me(req, res) {
   try {
-    const user = await User.findById(req.user.id).select("-password -otpHash -otpExpiresAt -otpAttempts");
+    const user = await User.findById(req.user.id)
+      .select("-password -otpHash -otpExpiresAt -otpAttempts -otpPurpose -verificationHistory")
+      .populate("organization", "name status claimCategories");
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
-    return res.status(200).json({ user });
+    return res.status(200).json({ user: publicUser(user) });
   } catch (err) {
     console.error("Me endpoint error:", err);
     return res.status(500).json({ message: "Something went wrong." });
@@ -293,12 +485,16 @@ async function googleAuth(req, res) {
     const email = payload.email.toLowerCase().trim();
     let user = await User.findOne({ email });
 
+    if (user?.role === "superadmin") {
+      return res.status(403).json({ message: "Use the dedicated Super Admin login and email OTP." });
+    }
+
     if (!user) {
-      if (role === "admin") {
-        return res.status(400).json({ message: "Adjuster accounts need organization details — please use the full sign-up form instead of Google for your first sign-up." });
+      if (role !== "applicant") {
+        return res.status(400).json({ message: "Only Policy Holders can create an account with Google. Adjusters must submit the full verification form." });
       }
       user = await User.create({
-        role: role || "applicant",
+        role: "applicant",
         fullName: payload.name || email.split("@")[0],
         email,
         isGoogleAccount: true,
@@ -315,19 +511,15 @@ async function googleAuth(req, res) {
     // If the person picked a different account type on screen than what
     // this email is actually registered as, stop and explain — don't
     // silently drop them into the wrong dashboard.
-    if (role && user.role !== "superadmin" && role !== user.role) {
+    if (role && role !== user.role) {
       const roleLabel = { applicant: "Policy Holder", admin: "Adjuster" };
       return res.status(409).json({
         message: `This Google account is already registered as a ${roleLabel[user.role] || user.role}, not a ${roleLabel[role] || role}. Please switch tabs and log in as the correct account type, or use a different email to sign up as a ${roleLabel[role] || role}.`,
       });
     }
 
-    if (user.verificationStatus === "pending") {
-      return res.status(403).json({ message: "Your adjuster account is still awaiting Super Admin approval. This usually takes 1–2 business days." });
-    }
-    if (user.verificationStatus === "rejected") {
-      return res.status(403).json({ message: user.verificationNote || "Your adjuster account application was not approved. Contact support for details." });
-    }
+    const blocked = await accountBlockMessage(user);
+    if (blocked) return res.status(403).json({ message: blocked });
 
     const token = jwt.sign(
       { id: user._id, role: user.role },
@@ -338,12 +530,7 @@ async function googleAuth(req, res) {
     return res.status(200).json({
       message: "Login successful.",
       token,
-      user: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-      },
+      user: publicUser(user),
     });
   } catch (err) {
     console.error("Google auth error:", err);
@@ -369,9 +556,7 @@ async function forgotPassword(req, res) {
 
     if (user) {
       const otp = generateOtp();
-      user.otpHash = hashOtp(otp);
-      user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-      user.otpAttempts = 0;
+      setOtp(user, otp, "password_reset");
       await user.save();
       await sendPasswordResetEmail(user.email, otp);
     }
@@ -398,20 +583,18 @@ async function verifyResetOtp(req, res) {
     }
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
+    if (!user || user.otpPurpose !== "password_reset" || !user.otpHash || !user.otpExpiresAt) {
       return res.status(400).json({ message: "No pending password reset for this account." });
     }
 
     if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
+      clearOtp(user);
       await user.save();
       return res.status(400).json({ message: "Code has expired. Please request a new one." });
     }
 
     if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
+      clearOtp(user);
       await user.save();
       return res.status(429).json({ message: "Too many failed attempts. Please request a new code." });
     }
@@ -441,17 +624,16 @@ async function resetPassword(req, res) {
     if (!email || !otp || !newPassword) {
       return res.status(400).json({ message: "Email, code, and new password are required." });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters." });
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters." });
     }
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !user.otpHash || !user.otpExpiresAt) {
+    if (!user || user.otpPurpose !== "password_reset" || !user.otpHash || !user.otpExpiresAt) {
       return res.status(400).json({ message: "No pending password reset for this account." });
     }
     if (user.otpExpiresAt < new Date()) {
-      user.otpHash = null;
-      user.otpExpiresAt = null;
+      clearOtp(user);
       await user.save();
       return res.status(400).json({ message: "Code has expired. Please request a new one." });
     }
@@ -462,9 +644,7 @@ async function resetPassword(req, res) {
     }
 
     user.password = await bcrypt.hash(newPassword, 10);
-    user.otpHash = null;
-    user.otpExpiresAt = null;
-    user.otpAttempts = 0;
+    clearOtp(user);
     await user.save();
 
     return res.status(200).json({ message: "Password reset successful. You can now log in." });
@@ -474,4 +654,16 @@ async function resetPassword(req, res) {
   }
 }
 
-module.exports = { signup, login, verifyOtpHandler, resendOtp, me, googleAuth, forgotPassword, verifyResetOtp, resetPassword };
+module.exports = {
+  signup,
+  verifySignupOtp,
+  resendSignupOtp,
+  login,
+  verifyOtpHandler,
+  resendOtp,
+  me,
+  googleAuth,
+  forgotPassword,
+  verifyResetOtp,
+  resetPassword,
+};

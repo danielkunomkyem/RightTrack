@@ -8,13 +8,16 @@ async function request(path, body) {
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data.message || "Something went wrong. Please try again.");
+    const error = new Error(data.message || "Something went wrong. Please try again.");
+    error.code = data.code;
+    error.email = data.email;
+    throw error;
   }
   return data;
 }
 
-export function loginRequest(email, password) {
-  return request("/login", { email, password });
+export function loginRequest(email, password, requestedRole) {
+  return request("/login", { email, password, requestedRole });
 }
 
 export function verifyOtpRequest(email, otp, remember = false) {
@@ -27,6 +30,14 @@ export function resendOtpRequest(email) {
 
 export function signupRequest(payload) {
   return request("/signup", payload);
+}
+
+export function verifySignupOtpRequest(email, otp, remember = false) {
+  return request("/verify-signup-otp", { email, otp, remember });
+}
+
+export function resendSignupOtpRequest(email) {
+  return request("/resend-signup-otp", { email });
 }
 
 export function googleAuthRequest(credential, role, remember) {
@@ -58,29 +69,42 @@ export async function meRequest(token) {
 
 const ADMIN_BASE_URL = BASE_URL.replace(/\/auth$/, "/admin");
 
-export async function listPendingAdjustersRequest() {
-  const res = await fetch(`${ADMIN_BASE_URL}/pending-adjusters`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || "Couldn't load pending adjusters.");
-  return data;
-}
-
-export async function approveAdjusterRequest(id) {
-  const res = await fetch(`${ADMIN_BASE_URL}/adjusters/${id}/approve`, { method: "PATCH" });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || "Couldn't approve adjuster.");
-  return data;
-}
-
-export async function rejectAdjusterRequest(id, note) {
-  const res = await fetch(`${ADMIN_BASE_URL}/adjusters/${id}/reject`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ note }),
+async function adminRequest(path, { method = "GET", body } = {}) {
+  const res = await fetch(`${ADMIN_BASE_URL}${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${getToken()}`,
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.message || "Couldn't reject adjuster.");
+  if (!res.ok) throw new Error(data.message || "Couldn't complete the verification request.");
   return data;
+}
+
+export function listPendingOrganizationsRequest() {
+  return adminRequest("/pending-organizations");
+}
+
+export function approveOrganizationRequest(id, note = "") {
+  return adminRequest(`/organizations/${id}/approve`, { method: "PATCH", body: { note } });
+}
+
+export function rejectOrganizationRequest(id, note) {
+  return adminRequest(`/organizations/${id}/reject`, { method: "PATCH", body: { note } });
+}
+
+export function listPendingAdjustersRequest() {
+  return adminRequest("/pending-adjusters");
+}
+
+export function approveAdjusterRequest(id) {
+  return adminRequest(`/adjusters/${id}/approve`, { method: "PATCH" });
+}
+
+export function rejectAdjusterRequest(id, note) {
+  return adminRequest(`/adjusters/${id}/reject`, { method: "PATCH", body: { note } });
 }
 
 const CLAIMS_BASE_URL = BASE_URL.replace(/\/auth$/, "/claims");

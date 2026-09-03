@@ -46,6 +46,46 @@ async function sendOtpEmail(toEmail, otp) {
   return data;
 }
 
+async function sendSignupVerificationEmail(toEmail, otp) {
+  const payload = {
+    sender: {
+      name: "RightTrack",
+      email: process.env.BREVO_SENDER_EMAIL,
+    },
+    to: [{ email: toEmail }],
+    subject: "Verify your RightTrack policyholder account",
+    htmlContent: `
+      <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+        <h2 style="color: #0B2545;">Verify your policyholder account</h2>
+        <p>Enter this one-time code in RightTrack to confirm that you own this email address. It expires in 5 minutes.</p>
+        <p style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #0B2545; background: #E8F6F1; padding: 16px; text-align: center; border-radius: 8px;">
+          ${otp}
+        </p>
+        <p style="color: #667085; font-size: 13px;">If you did not create a RightTrack account, you can ignore this email.</p>
+      </div>
+    `,
+  };
+
+  const res = await fetch(BREVO_API_URL, {
+    method: "POST",
+    headers: {
+      "api-key": process.env.BREVO_API_KEY,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    console.error("Brevo send error (signup verification):", res.status, data);
+    throw new Error(data.message || "Failed to send account verification email.");
+  }
+
+  console.log(`Signup verification email sent to ${toEmail} via Brevo — messageId: ${data.messageId}`);
+  return data;
+}
+
 async function sendPasswordResetEmail(toEmail, otp) {
   const payload = {
     sender: {
@@ -129,4 +169,4 @@ async function sendPolicyAssignedEmail(toEmail, policyId, insurer, category) {
   return data;
 }
 
-module.exports = { sendOtpEmail, sendPasswordResetEmail, sendPolicyAssignedEmail };
+module.exports = { sendOtpEmail, sendSignupVerificationEmail, sendPasswordResetEmail, sendPolicyAssignedEmail };

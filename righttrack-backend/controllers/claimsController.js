@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const Claim = require("../models/Claim");
 const User = require("../models/User");
+const Organization = require("../models/Organization");
 
 function generateClaimId() {
   return "CLM-" + crypto.randomBytes(4).toString("hex").toUpperCase();
@@ -232,22 +233,23 @@ async function decideClaim(req, res) {
  */
 async function listInsurers(req, res) {
   try {
-    const orgs = await User.find({ role: "admin", verificationStatus: "approved" })
-      .select("orgName claimCategories")
+    const staffedOrganizationIds = await User.distinct("organization", {
+      role: "admin",
+      verificationStatus: "approved",
+      organization: { $ne: null },
+    });
+    const organizations = await Organization.find({
+      _id: { $in: staffedOrganizationIds },
+      status: "approved",
+    })
+      .select("name claimCategories")
+      .sort({ name: 1 })
       .lean();
-
-    // Merge organizations that share the same name (multiple approved
-    // adjusters at one company) into a single entry with combined categories.
-    const merged = {};
-    for (const org of orgs) {
-      if (!org.orgName) continue;
-      if (!merged[org.orgName]) merged[org.orgName] = new Set();
-      (org.claimCategories || []).forEach((c) => merged[org.orgName].add(c));
-    }
-
-    const insurers = Object.keys(merged)
-      .sort()
-      .map((name) => ({ name, categories: Array.from(merged[name]) }));
+    const insurers = organizations.map((organization) => ({
+      id: organization._id,
+      name: organization.name,
+      categories: organization.claimCategories,
+    }));
 
     return res.status(200).json({ insurers });
   } catch (err) {

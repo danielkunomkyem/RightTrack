@@ -26,9 +26,9 @@ import ApiDocs from "./pages/ApiDocs.jsx";
 import Settings from "./pages/Settings.jsx";
 import { seedClaims, seedAdjusters, seedPolicyholders } from "./lib/data.js";
 import { NOW, fmtMoney, uid } from "./lib/helpers.js";
-import { PREMIUM_PRICE, PREMIUM_TRIAL_DAYS, SUPERADMIN_CREDENTIALS } from "./lib/constants.js";
+import { PREMIUM_PRICE, PREMIUM_TRIAL_DAYS } from "./lib/constants.js";
 import { SiteNavContext } from "./lib/SiteNav.jsx";
-import { loginRequest, verifyOtpRequest, resendOtpRequest, signupRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
+import { loginRequest, verifyOtpRequest, resendOtpRequest, signupRequest, verifySignupOtpRequest, resendSignupOtpRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
 import { initGoogleSignIn, promptGoogleSignIn } from "./lib/googleAuth.js";
 
 export default function App() {
@@ -100,12 +100,10 @@ export default function App() {
     setRole(r);
     setScreen("app");
     setView(r === "superadmin" ? "sa-dashboard" : "dashboard");
-    if (r === "superadmin") {
-      setProfile((prev) => ({ ...prev, fullName: "System Administrator", email: SUPERADMIN_CREDENTIALS.email }));
-    } else if (identity) {
+    if (identity) {
       setProfile((prev) => ({
         ...prev,
-        fullName: identity.fullName || "",
+        fullName: identity.fullName || (r === "superadmin" ? "System Administrator" : ""),
         email: identity.email || "",
         policyId: identity.policyNumber || "",
         orgName: identity.orgName || "",
@@ -337,9 +335,21 @@ export default function App() {
           setAuthLoading(true);
           setAuthError("");
           try {
-            await signupRequest(form);
-            pushToast({ type: "success", title: "Account created", body: "You can now log in with your new account." });
-            setScreen("login");
+            const res = await signupRequest(form);
+            pushToast({
+              type: "success",
+              title: form.role === "admin" ? "Verification submitted" : "Account created",
+              body: res.message,
+            });
+            if (form.role === "applicant") {
+              setPendingEmail(res.user.email);
+              setPendingRole("applicant");
+              setPendingRemember(form.remember);
+              setOtpResendStatus(res.verificationEmailSent === false ? "Request a new code to retry email delivery." : "");
+              setScreen("signup-verify");
+            } else {
+              setScreen("login");
+            }
           } catch (err) {
             pushToast({ type: "warn", title: "Sign up failed", body: err.message });
           } finally {
@@ -348,6 +358,46 @@ export default function App() {
         }}
         onGoogleAuth={handleGoogleAuth}
         loading={authLoading}
+      />
+      <Toast toasts={toasts} />
+      </>
+    );
+  }
+  if (screen === "signup-verify") {
+    return (
+      <>
+      <VerifyEmail
+        email={pendingEmail}
+        title="Verify policyholder account"
+        description="Enter the sign-up code to confirm that you own this email address."
+        onBack={() => { setAuthError(""); setScreen("login"); }}
+        loading={authLoading}
+        error={authError}
+        resendStatus={otpResendStatus}
+        onVerified={async (otp) => {
+          setAuthLoading(true);
+          setAuthError("");
+          try {
+            const res = await verifySignupOtpRequest(pendingEmail, otp, pendingRemember);
+            localStorage.setItem("rt_token", res.token);
+            pushToast({ type: "success", title: "Email verified", body: "Your policyholder account is now active." });
+            enterApp(res.user.role, res.user);
+          } catch (err) {
+            setAuthError(err.message);
+          } finally {
+            setAuthLoading(false);
+          }
+        }}
+        onResend={async () => {
+          setOtpResendStatus("Sending…");
+          setAuthError("");
+          try {
+            await resendSignupOtpRequest(pendingEmail);
+            setOtpResendStatus("A new policyholder verification code has been sent.");
+          } catch (err) {
+            setOtpResendStatus(err.message);
+          }
+        }}
       />
       <Toast toasts={toasts} />
       </>
@@ -362,14 +412,23 @@ export default function App() {
           setAuthLoading(true);
           setAuthError("");
           try {
-            await loginRequest(form.email, form.password);
+            await loginRequest(form.email, form.password, form.role);
             setPendingEmail(form.email);
             setPendingRole(form.role);
             setPendingRemember(form.remember);
             setOtpResendStatus("");
             setScreen("login-verify");
           } catch (err) {
-            setAuthError(err.message);
+            if (err.code === "EMAIL_NOT_VERIFIED") {
+              setPendingEmail(err.email || form.email);
+              setPendingRole("applicant");
+              setPendingRemember(form.remember);
+              setOtpResendStatus("Your account still needs email verification. Request a new code if the original OTP has expired.");
+              setAuthError("");
+              setScreen("signup-verify");
+            } else {
+              setAuthError(err.message);
+            }
           } finally {
             setAuthLoading(false);
           }
@@ -389,7 +448,7 @@ export default function App() {
       <>
       <VerifyEmail
         email={pendingEmail}
-        onBack={() => { setAuthError(""); setScreen("login"); }}
+        onBack={() => { setAuthError(""); setScreen(pendingRole === "superadmin" ? "superadmin-login" : "login"); }}
         loading={authLoading}
         error={authError}
         resendStatus={otpResendStatus}
@@ -424,7 +483,30 @@ export default function App() {
     return <><ForgotPassword onBack={() => setScreen("login")} onDone={() => setScreen("login")} /><Toast toasts={toasts} /></>;
   }
   if (screen === "superadmin-login") {
-    return <><SuperAdminLogin onBack={() => setScreen("login")} onSubmit={() => enterApp("superadmin")} /><Toast toasts={toasts} /></>;
+    return <>
+      <SuperAdminLogin
+        onBack={() => { setAuthError(""); setScreen("login"); }}
+        loading={authLoading}
+        error={authError}
+        onSubmit={async (form) => {
+          setAuthLoading(true);
+          setAuthError("");
+          try {
+            await loginRequest(form.email, form.password, "superadmin");
+            setPendingEmail(form.email);
+            setPendingRole("superadmin");
+            setPendingRemember(false);
+            setOtpResendStatus("");
+            setScreen("login-verify");
+          } catch (err) {
+            setAuthError(err.message);
+          } finally {
+            setAuthLoading(false);
+          }
+        }}
+      />
+      <Toast toasts={toasts} />
+    </>;
   }
 
   const selectedClaim = claims.find((c) => c.id === selected);

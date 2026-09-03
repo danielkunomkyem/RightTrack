@@ -16,27 +16,58 @@ const userSchema = new mongoose.Schema(
     policyNumber: { type: String, trim: true },
 
     // Adjuster-specific
+    organization: { type: mongoose.Schema.Types.ObjectId, ref: "Organization", default: null },
     orgName: { type: String, trim: true },
     isRegisteredOrg: { type: Boolean, default: false },
     claimCategories: { type: [String], default: [] }, // which claim types this org handles
     cac: { type: String, trim: true },
+    organizationLicenseNumber: { type: String, trim: true },
     licenseNumber: { type: String, trim: true },
 
-    // --- OTP login fields ---
+    // --- One-time code fields ---
     otpHash: { type: String, default: null },
     otpExpiresAt: { type: Date, default: null },
     otpAttempts: { type: Number, default: 0 },
+    otpPurpose: {
+      type: String,
+      enum: ["signup", "login", "password_reset", null],
+      default: null,
+    },
     isVerified: { type: Boolean, default: false },
 
     // --- Adjuster verification (Super Admin manually reviews License/CAC) ---
     verificationStatus: {
       type: String,
-      enum: ["not_required", "pending", "approved", "rejected"],
+      enum: ["not_required", "pending", "approved", "rejected", "suspended"],
       default: function () { return this.role === "admin" ? "pending" : "not_required"; },
     },
     verificationNote: { type: String, default: "" }, // optional reason if rejected
+    verificationReviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    verificationReviewedAt: { type: Date, default: null },
+    verificationHistory: {
+      type: [{
+        status: { type: String, enum: ["pending", "approved", "rejected", "suspended"] },
+        note: { type: String, trim: true, default: "" },
+        actor: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        at: { type: Date, default: Date.now },
+        _id: false,
+      }],
+      default: [],
+    },
   },
   { timestamps: true }
+);
+
+userSchema.index(
+  { organization: 1, licenseNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      organization: { $type: "objectId" },
+      licenseNumber: { $type: "string" },
+      role: "admin",
+    },
+  }
 );
 
 module.exports = mongoose.model("User", userSchema);

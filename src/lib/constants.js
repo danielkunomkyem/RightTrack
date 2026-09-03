@@ -40,11 +40,6 @@ export const PREMIUM_PRICE = { monthly: 18000, annual: 200000 };
 export const PREMIUM_TRIAL_DAYS = 30;
 export const isPremiumPlan = (plan) => plan === "premium" || plan === "trial";
 
-export const SUPERADMIN_CREDENTIALS = {
-  email: "superadmin@righttrack.africa",
-  password: "RightTrack@Super2026",
-};
-
 export const ADJUSTER_STATUS_META = {
   active: { label: "Active", cls: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   suspended: { label: "Suspended", cls: "bg-red-50 text-red-700 ring-red-200" },

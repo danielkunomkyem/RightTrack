@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
-import { Search, Mail, Phone, MessageSquare, Ban, CheckCircle2, Star, Plus, BadgeCheck, Building2, Hash } from "lucide-react";
+import { Search, Mail, Phone, MessageSquare, Ban, CheckCircle2, Star, Plus, BadgeCheck, Building2, Hash, ShieldCheck } from "lucide-react";
 import { Card, Modal, Field, Select } from "../../components/UI.jsx";
 import MessageModal from "../../components/MessageModal.jsx";
 import { ADJUSTER_STATUS_META } from "../../lib/constants.js";
 import { slaInfo, fmtDate } from "../../lib/helpers.js";
-import { listPendingAdjustersRequest, approveAdjusterRequest, rejectAdjusterRequest } from "../../lib/api.js";
+import {
+  listPendingOrganizationsRequest,
+  approveOrganizationRequest,
+  rejectOrganizationRequest,
+  listPendingAdjustersRequest,
+  approveAdjusterRequest,
+  rejectAdjusterRequest,
+} from "../../lib/api.js";
 
-function PendingAdjusters({ pushToast }) {
+function VerificationQueue({ pushToast }) {
+  const [organizations, setOrganizations] = useState([]);
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
   const [rejecting, setRejecting] = useState(null);
@@ -14,13 +22,31 @@ function PendingAdjusters({ pushToast }) {
 
   const load = () => {
     setLoading(true);
-    listPendingAdjustersRequest()
-      .then((res) => setPending(res.adjusters))
-      .catch((err) => pushToast({ type: "warn", title: "Couldn't load pending adjusters", body: err.message }))
+    Promise.all([listPendingOrganizationsRequest(), listPendingAdjustersRequest()])
+      .then(([orgResult, adjusterResult]) => {
+        setOrganizations(orgResult.organizations);
+        setPending(adjusterResult.adjusters);
+      })
+      .catch((err) => pushToast({ type: "warn", title: "Couldn't load verification queue", body: err.message }))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
+
+  const handleApproveOrganization = async (organization) => {
+    try {
+      await approveOrganizationRequest(organization._id);
+      pushToast({ type: "success", title: "Organization approved", body: `${organization.name} passed verification.` });
+      setOrganizations((prev) => prev.filter((item) => item._id !== organization._id));
+      setPending((prev) => prev.map((adjuster) => (
+        adjuster.organization?._id === organization._id
+          ? { ...adjuster, organization: { ...adjuster.organization, status: "approved" } }
+          : adjuster
+      )));
+    } catch (err) {
+      pushToast({ type: "warn", title: "Approval failed", body: err.message });
+    }
+  };
 
   const handleApprove = async (a) => {
     try {
@@ -34,10 +60,22 @@ function PendingAdjusters({ pushToast }) {
 
   const handleReject = async () => {
     if (!rejecting) return;
+    if (!note.trim()) return;
     try {
-      await rejectAdjusterRequest(rejecting._id, note);
-      pushToast({ type: "warn", title: "Adjuster rejected", body: `${rejecting.fullName} was notified.` });
-      setPending((prev) => prev.filter((x) => x._id !== rejecting._id));
+      if (rejecting.type === "organization") {
+        await rejectOrganizationRequest(rejecting.item._id, note);
+        pushToast({ type: "warn", title: "Organization rejected", body: `${rejecting.item.name}'s application was declined.` });
+        setOrganizations((prev) => prev.filter((item) => item._id !== rejecting.item._id));
+        setPending((prev) => prev.map((adjuster) => (
+          adjuster.organization?._id === rejecting.item._id
+            ? { ...adjuster, organization: { ...adjuster.organization, status: "rejected" } }
+            : adjuster
+        )));
+      } else {
+        await rejectAdjusterRequest(rejecting.item._id, note);
+        pushToast({ type: "warn", title: "Adjuster rejected", body: `${rejecting.item.fullName}'s application was declined.` });
+        setPending((prev) => prev.filter((x) => x._id !== rejecting.item._id));
+      }
       setRejecting(null);
       setNote("");
     } catch (err) {
@@ -45,26 +83,84 @@ function PendingAdjusters({ pushToast }) {
     }
   };
 
-  if (loading) return null;
-  if (pending.length === 0) return null;
+  if (loading) {
+    return <Card className="p-5 text-sm text-ink-500">Loading organization and adjuster verification queue…</Card>;
+  }
+
+  const organizationStatusClass = {
+    approved: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    pending: "bg-amber-50 text-amber-700 ring-amber-200",
+    rejected: "bg-red-50 text-red-700 ring-red-200",
+    suspended: "bg-red-50 text-red-700 ring-red-200",
+  };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-7">
       <div>
-        <h2 className="font-display text-lg font-semibold text-navy-900">Pending Adjuster Verifications</h2>
-        <p className="text-ink-500 text-sm mt-0.5">Check each Staff ID and CAC number, then approve or reject.</p>
+        <h2 className="font-display text-lg font-semibold text-navy-900">Verification Queue</h2>
+        <p className="text-ink-500 text-sm mt-0.5">Approve the legal organization first, then verify each adjuster's employment credentials.</p>
       </div>
-      <div className="grid md:grid-cols-2 gap-4">
-        {pending.map((a) => (
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-display font-semibold text-navy-900">1. Organizations</h3>
+          <span className="text-xs font-semibold text-ink-400">{organizations.length} pending</span>
+        </div>
+        {organizations.length === 0 ? (
+          <Card className="p-4 text-sm text-ink-500">No organization applications are waiting.</Card>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-4">
+            {organizations.map((organization) => (
+              <Card key={organization._id} className="p-5 ring-1 ring-amber-200 bg-amber-50/40">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-display font-semibold text-navy-900">{organization.name}</p>
+                    <p className="text-xs text-ink-500">Submitted by {organization.submittedBy?.fullName || "an adjuster"}</p>
+                  </div>
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset bg-amber-50 text-amber-700 ring-amber-200">Pending</span>
+                </div>
+                <div className="mt-3 space-y-1.5 text-xs text-ink-700">
+                  <p className="flex items-center gap-1.5"><Hash className="w-3.5 h-3.5 text-ink-400" />CAC: <span className="font-semibold">{organization.cacNumber}</span></p>
+                  <p className="flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5 text-ink-400" />Regulatory licence: <span className="font-semibold">{organization.naicomLicenseNumber}</span></p>
+                  <p className="text-ink-400">Submitted {fmtDate(organization.createdAt)}</p>
+                </div>
+                <div className="flex flex-wrap gap-1 mt-3">
+                  {organization.claimCategories.map((category) => <span key={category} className="px-2 py-0.5 rounded-full bg-navy-100 text-navy-700 text-[11px] font-medium">{category}</span>)}
+                </div>
+                <div className="flex gap-2 mt-4">
+                  <button onClick={() => setRejecting({ type: "organization", item: organization })} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-red-50 text-red-700 hover:bg-red-100">Reject</button>
+                  <button onClick={() => handleApproveOrganization(organization)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100">Approve organization</button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-display font-semibold text-navy-900">2. Adjusters</h3>
+          <span className="text-xs font-semibold text-ink-400">{pending.length} pending</span>
+        </div>
+        {pending.length === 0 ? (
+          <Card className="p-4 text-sm text-ink-500">No adjuster applications are waiting.</Card>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-4">
+            {pending.map((a) => {
+              const organizationStatus = a.organization?.status || "pending";
+              const organizationApproved = organizationStatus === "approved";
+              return (
           <Card key={a._id} className="p-5 ring-1 ring-amber-200 bg-amber-50/40">
-            <p className="font-display font-semibold text-navy-900">{a.fullName}</p>
-            <p className="text-xs text-ink-500">{a.email}</p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-display font-semibold text-navy-900">{a.fullName}</p>
+                <p className="text-xs text-ink-500">{a.email}</p>
+              </div>
+              <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${organizationStatusClass[organizationStatus]}`}>Org {organizationStatus}</span>
+            </div>
             <div className="mt-3 space-y-1.5 text-xs text-ink-700">
-              <p className="flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5 text-ink-400" />{a.orgName || "—"}</p>
+              <p className="flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5 text-ink-400" />{a.organization?.name || a.orgName || "—"}</p>
               <p className="flex items-center gap-1.5"><BadgeCheck className="w-3.5 h-3.5 text-ink-400" />License/Staff ID: <span className="font-semibold">{a.licenseNumber || "—"}</span></p>
-              {a.isRegisteredOrg && (
-                <p className="flex items-center gap-1.5"><Hash className="w-3.5 h-3.5 text-ink-400" />CAC: <span className="font-semibold">{a.cac || "—"}</span></p>
-              )}
               {a.claimCategories && a.claimCategories.length > 0 && (
                 <div className="flex flex-wrap gap-1 pt-1">
                   {a.claimCategories.map((c) => (
@@ -75,23 +171,26 @@ function PendingAdjusters({ pushToast }) {
               <p className="text-ink-400">Applied {fmtDate(a.createdAt)}</p>
             </div>
             <div className="flex gap-2 mt-4">
-              <button onClick={() => setRejecting(a)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-red-50 text-red-700 hover:bg-red-100">Reject</button>
-              <button onClick={() => handleApprove(a)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100">Approve</button>
+              <button onClick={() => setRejecting({ type: "adjuster", item: a })} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-red-50 text-red-700 hover:bg-red-100">Reject</button>
+              <button disabled={!organizationApproved} title={organizationApproved ? "Approve this adjuster" : "Approve the organization first"} onClick={() => handleApprove(a)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed">Approve adjuster</button>
             </div>
           </Card>
-        ))}
-      </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       <Modal open={!!rejecting} onClose={() => { setRejecting(null); setNote(""); }}>
         <div className="p-6">
-          <p className="font-display font-semibold text-navy-900 text-lg">Reject {rejecting?.fullName}</p>
-          <p className="text-xs text-ink-500 mt-1">Optionally tell them why — this is shown if they try to log in.</p>
-          <Field label="Reason (optional)">
+          <p className="font-display font-semibold text-navy-900 text-lg">Reject {rejecting?.item?.name || rejecting?.item?.fullName}</p>
+          <p className="text-xs text-ink-500 mt-1">Record a clear reason. It is saved to the audit trail and shown when the applicant tries to log in.</p>
+          <Field label="Reason">
             <textarea className="input" rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. License number could not be verified" />
           </Field>
           <div className="flex gap-3 pt-3">
             <button type="button" onClick={() => { setRejecting(null); setNote(""); }} className="btn-ghost flex-1">Cancel</button>
-            <button type="button" onClick={handleReject} className="flex-1 rounded-xl font-semibold bg-red-600 text-white py-2.5 hover:bg-red-700">Confirm Reject</button>
+            <button type="button" disabled={!note.trim()} onClick={handleReject} className="flex-1 rounded-xl font-semibold bg-red-600 text-white py-2.5 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed">Confirm Reject</button>
           </div>
         </div>
       </Modal>
@@ -136,7 +235,7 @@ export default function SuperAdminAdjusters({ adjusters, claims, onToggleStatus,
         <button onClick={() => setInviting(true)} className="btn-primary text-sm"><Plus className="w-4 h-4" />Invite Adjuster</button>
       </div>
 
-      <PendingAdjusters pushToast={pushToast} />
+      <VerificationQueue pushToast={pushToast} />
 
       <Card className="p-4">
         <div className="relative">

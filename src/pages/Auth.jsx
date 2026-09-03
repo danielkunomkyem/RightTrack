@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
-import { Mail, Lock, ArrowLeft, User, Hash, Building2, BadgeCheck, ShieldCheck, UserRound, ShieldAlert, Check, Eye, EyeOff, ChevronDown } from "lucide-react";
+import { Mail, Lock, ArrowLeft, User, Hash, Building2, BadgeCheck, ShieldCheck, UserRound, ShieldAlert, Check, Eye, EyeOff } from "lucide-react";
 import Logo from "../components/Logo.jsx";
-import { SUPERADMIN_CREDENTIALS, INSURERS, CATEGORY_META } from "../lib/constants.js";
+import { CATEGORY_META } from "../lib/constants.js";
 import { forgotPasswordRequest, verifyResetOtpRequest, resetPasswordRequest } from "../lib/api.js";
 
 function AuthShell({ children, wide }) {
@@ -111,13 +111,14 @@ function RoleToggle({ value, onChange }) {
 }
 
 const emptyPolicyHolder = { fullName: "", policyNumber: "", email: "", password: "", confirm: "" };
-const emptyAdjuster = { fullName: "", orgName: "", isRegisteredOrg: true, cac: "", licenseNumber: "", claimCategories: [], email: "", password: "", confirm: "" };
+const emptyAdjuster = { fullName: "", orgName: "", cac: "", organizationLicenseNumber: "", licenseNumber: "", claimCategories: [], email: "", password: "", confirm: "" };
 
 // Loose format checks — these catch typos/nonsense input, not fraud.
 // e.g. "ADJ-2451", "NAICOM-ADJ-00214", "LIC12345"
 const LICENSE_PATTERN = /^[A-Za-z]{2,}[-\s]?[A-Za-z0-9-]{3,}$/;
 // Nigerian CAC format: RC / BN / IT followed by 5-7 digits, e.g. "RC 1234567"
 const CAC_PATTERN = /^(RC|BN|IT)\s?\d{5,7}$/i;
+const ORGANIZATION_LICENSE_PATTERN = /^[A-Za-z]{2,}(?:[-/\s]?[A-Za-z0-9]+){1,}$/;
 
 export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "applicant", loading }) {
   const [role, setRole] = useState(initialRole);
@@ -140,9 +141,9 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
   const errors = [];
   if (form.fullName.trim().length <= 1) errors.push("Enter your full name.");
   if (!form.email.includes("@")) errors.push("Enter a valid email address.");
-  if (form.password.length < 6) errors.push("Password must be at least 6 characters.");
+  if (form.password.length < 8) errors.push("Password must be at least 8 characters.");
   if (form.password !== form.confirm) errors.push("Password and Confirm Password don't match.");
-  if (role === "applicant" && !policyHolder.policyNumber.trim()) errors.push("Enter your policy number.");
+  // if (role === "applicant" && !policyHolder.policyNumber.trim()) errors.push("Enter your policy number.");
   if (role === "admin") {
     if (!adjuster.orgName.trim()) errors.push("Enter your organization's name.");
     if (!adjuster.licenseNumber.trim()) {
@@ -150,12 +151,15 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
     } else if (!LICENSE_PATTERN.test(adjuster.licenseNumber.trim())) {
       errors.push("Adjuster License / Staff ID doesn't look right — expected letters and numbers, e.g. NAICOM-ADJ-00214.");
     }
-    if (adjuster.isRegisteredOrg) {
-      if (!adjuster.cac.trim()) {
-        errors.push("Enter your CAC Registration Number.");
-      } else if (!CAC_PATTERN.test(adjuster.cac.trim())) {
-        errors.push("CAC Registration Number doesn't look right — expected format like RC 1234567.");
-      }
+    if (!adjuster.cac.trim()) {
+      errors.push("Enter your CAC Registration Number.");
+    } else if (!CAC_PATTERN.test(adjuster.cac.trim())) {
+      errors.push("CAC Registration Number doesn't look right — expected format like RC 1234567.");
+    }
+    if (!adjuster.organizationLicenseNumber.trim()) {
+      errors.push("Enter the organization's regulatory licence number.");
+    } else if (!ORGANIZATION_LICENSE_PATTERN.test(adjuster.organizationLicenseNumber.trim())) {
+      errors.push("Organization licence number doesn't look right — expected letters and numbers.");
     }
     if (adjuster.claimCategories.length === 0) {
       errors.push("Select at least one claim category your organization handles.");
@@ -225,27 +229,26 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
               onChange={(e) => setAdjuster({ ...adjuster, licenseNumber: e.target.value })}
               placeholder="e.g. NAICOM-ADJ-00214"
             />
-            <label className="flex items-center gap-2 text-sm text-ink-700">
-              <input
-                type="checkbox"
-                checked={adjuster.isRegisteredOrg}
-                onChange={(e) => setAdjuster({ ...adjuster, isRegisteredOrg: e.target.checked, cac: e.target.checked ? adjuster.cac : "" })}
-                className="rounded border-ink-900/20"
-              />
-              I'm signing up on behalf of a CAC-registered organization
-            </label>
-            {adjuster.isRegisteredOrg && (
-              <TextField
-                label="CAC Registration Number"
-                icon={Hash}
-                type="text"
-                required
-                value={adjuster.cac}
-                onChange={(e) => setAdjuster({ ...adjuster, cac: e.target.value })}
-                placeholder="e.g. RC 1234567"
-                hint="Required for registered organizations — Corporate Affairs Commission number."
-              />
-            )}
+            <TextField
+              label="CAC Registration Number"
+              icon={Hash}
+              type="text"
+              required
+              value={adjuster.cac}
+              onChange={(e) => setAdjuster({ ...adjuster, cac: e.target.value })}
+              placeholder="e.g. RC 1234567"
+              hint="Used to verify the legal organization record."
+            />
+            <TextField
+              label="Organization Regulatory Licence"
+              icon={ShieldCheck}
+              type="text"
+              required
+              value={adjuster.organizationLicenseNumber}
+              onChange={(e) => setAdjuster({ ...adjuster, organizationLicenseNumber: e.target.value })}
+              placeholder="e.g. NAICOM/INS/0123"
+              hint="The insurer's regulator-issued licence number, not your staff ID."
+            />
             <div>
               <span className="text-xs font-semibold text-ink-700 mb-1.5 block">Claim Categories You Handle</span>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -272,7 +275,7 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
               <span className="text-[11px] text-ink-400 mt-1.5 block">Policyholders will only see your organization for the categories you select here.</span>
             </div>
             <p className="text-[11px] text-ink-400 -mt-1">
-              Your License/Staff ID and CAC number are reviewed by a Super Admin before your account is activated. This usually takes 1–2 business days.
+              Verification happens in order: the organization registration is checked first, then your staff credentials. You cannot log in until both are approved.
             </p>
           </>
         )}
@@ -285,6 +288,7 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
           value={form.email}
           onChange={(e) => setForm({ ...form, email: e.target.value })}
           placeholder="Enter your email address"
+          hint={role === "applicant" ? "We'll send a 6-digit OTP here to activate your policyholder account." : "Use your work email for organization verification."}
         />
         <TextField
           label="Password"
@@ -331,7 +335,7 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
 
 export function Login({ onSubmit, onGoSignup, onGoSuperAdmin, onForgotPassword, onGoogleAuth, loading, error }) {
   const [role, setRole] = useState("applicant");
-  const [form, setForm] = useState({ email: "", password: "", orgName: INSURERS[0] });
+  const [form, setForm] = useState({ email: "", password: "" });
   const [remember, setRemember] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const canSubmit = form.email.includes("@") && form.password.length > 0 && !loading;
@@ -352,18 +356,6 @@ export function Login({ onSubmit, onGoSignup, onGoSuperAdmin, onForgotPassword, 
       </div>
 
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (canSubmit) onSubmit({ role, remember, ...form }); }}>
-        {role === "admin" && (
-          <label className="block">
-            <span className="text-xs font-semibold text-ink-700 mb-1.5 block">Insurer / Organization</span>
-            <div className="relative">
-              <Building2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-300" />
-              <select value={form.orgName} onChange={(e) => setForm({ ...form, orgName: e.target.value })} className="input pl-9 pr-9 appearance-none cursor-pointer bg-white">
-                {INSURERS.map((i) => <option key={i}>{i}</option>)}
-              </select>
-              <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
-            </div>
-          </label>
-        )}
         <TextField
           label="Email Address"
           icon={Mail}
@@ -421,7 +413,7 @@ export function ForgotPassword({ onBack, onDone }) {
   const [resendStatus, setResendStatus] = useState("");
 
   const otpComplete = digits.every((d) => d !== "");
-  const passwordsOk = pw.password.length >= 6 && pw.password === pw.confirm;
+  const passwordsOk = pw.password.length >= 8 && pw.password === pw.confirm;
 
   const updateDigit = (i, val) => {
     if (!/^[0-9]?$/.test(val)) return;
@@ -561,7 +553,7 @@ export function ForgotPassword({ onBack, onDone }) {
               value={pw.password}
               onChange={(e) => setPw({ ...pw, password: e.target.value })}
               placeholder="Enter new password"
-              hint="At least 6 characters."
+              hint="At least 8 characters."
             />
             <TextField
               label="Confirm Password"
@@ -592,18 +584,12 @@ export function ForgotPassword({ onBack, onDone }) {
   );
 }
 
-export function SuperAdminLogin({ onSubmit, onBack }) {
+export function SuperAdminLogin({ onSubmit, onBack, loading, error }) {
   const [form, setForm] = useState({ email: "", password: "" });
-  const [error, setError] = useState("");
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (form.email.trim().toLowerCase() === SUPERADMIN_CREDENTIALS.email && form.password === SUPERADMIN_CREDENTIALS.password) {
-      setError("");
-      onSubmit();
-    } else {
-      setError("Incorrect email or password for the Super Admin account.");
-    }
+    if (!loading) onSubmit(form);
   };
 
   return (
@@ -622,8 +608,8 @@ export function SuperAdminLogin({ onSubmit, onBack }) {
           type="email"
           required
           value={form.email}
-          onChange={(e) => { setForm({ ...form, email: e.target.value }); setError(""); }}
-          placeholder="superadmin@righttrack.africa"
+          onChange={(e) => setForm({ ...form, email: e.target.value })}
+          placeholder="Enter the configured admin email"
         />
         <TextField
           label="Password"
@@ -631,18 +617,20 @@ export function SuperAdminLogin({ onSubmit, onBack }) {
           type="password"
           required
           value={form.password}
-          onChange={(e) => { setForm({ ...form, password: e.target.value }); setError(""); }}
+          onChange={(e) => setForm({ ...form, password: e.target.value })}
           placeholder="Enter password"
         />
         {error && <p className="text-xs font-medium text-red-600 bg-red-50 ring-1 ring-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <button type="submit" className="btn-primary w-full">Enter Super Admin Console</button>
+        <button type="submit" disabled={loading} className="btn-primary w-full disabled:opacity-40 disabled:cursor-not-allowed">
+          {loading ? "Checking…" : "Continue to verification"}
+        </button>
       </form>
       <p className="text-[11px] text-ink-300 text-center mt-6">This account manages the whole platform — policyholders, adjusters, and every claim in the system.</p>
     </AuthShell>
   );
 }
 
-export function VerifyEmail({ email, onVerified, onBack, onResend, loading, error, resendStatus }) {
+export function VerifyEmail({ email, onVerified, onBack, onResend, loading, error, resendStatus, title = "Verify your login", description }) {
   const [digits, setDigits] = useState(["", "", "", "", "", ""]);
   const refs = useRef([]);
   const complete = digits.every((d) => d !== "");
@@ -657,6 +645,14 @@ export function VerifyEmail({ email, onVerified, onBack, onResend, loading, erro
   const onKeyDown = (i, e) => {
     if (e.key === "Backspace" && !digits[i] && i > 0) refs.current[i - 1]?.focus();
   };
+  const onPaste = (e) => {
+    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
+    if (!pasted) return;
+    e.preventDefault();
+    const next = Array.from({ length: 6 }, (_, index) => pasted[index] || "");
+    setDigits(next);
+    refs.current[Math.min(pasted.length, 6) - 1]?.focus();
+  };
 
   const handleVerify = () => {
     if (!complete || loading) return;
@@ -667,8 +663,11 @@ export function VerifyEmail({ email, onVerified, onBack, onResend, loading, erro
     <AuthShell>
       <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-500 hover:text-navy-900 mb-4"><ArrowLeft className="w-4 h-4" />Back</button>
       <div className="flex justify-center mb-6"><Logo size="lg" /></div>
-      <h1 className="font-display text-xl font-semibold text-navy-900 text-center">Verify email</h1>
-      <p className="text-sm text-ink-500 text-center mt-1">We've sent a 6-digit code to {email || "your email"}<br />It expires soon — check your inbox (and spam).</p>
+      <h1 className="font-display text-xl font-semibold text-navy-900 text-center">{title}</h1>
+      <p className="text-sm text-ink-500 text-center mt-1">
+        {description || "Enter the code to finish signing in."}<br />
+        We sent a 6-digit code to <span className="font-medium text-ink-700">{email || "your email"}</span>. It expires in 5 minutes.
+      </p>
       <div className="flex justify-center gap-2 mt-6">
         {digits.map((d, i) => (
           <input
@@ -677,8 +676,11 @@ export function VerifyEmail({ email, onVerified, onBack, onResend, loading, erro
             value={d}
             onChange={(e) => update(i, e.target.value)}
             onKeyDown={(e) => onKeyDown(i, e)}
+            onPaste={onPaste}
             maxLength={1}
             inputMode="numeric"
+            autoComplete={i === 0 ? "one-time-code" : "off"}
+            aria-label={`OTP digit ${i + 1}`}
             className="w-11 h-12 text-center text-lg font-semibold rounded-xl border border-ink-900/12 focus:border-bearing-600 focus:ring-2 focus:ring-bearing-100 outline-none"
           />
         ))}
@@ -689,7 +691,7 @@ export function VerifyEmail({ email, onVerified, onBack, onResend, loading, erro
       </button>
       <p className="text-sm text-ink-500 text-center mt-4">
         Didn't receive a code?{" "}
-        <button type="button" onClick={onResend} className="font-semibold text-bearing-600 hover:underline">Request a new one</button>
+        <button type="button" disabled={loading} onClick={onResend} className="font-semibold text-bearing-600 hover:underline disabled:opacity-50">Request a new one</button>
         {resendStatus && <span className="block text-xs text-ink-400 mt-1">{resendStatus}</span>}
       </p>
     </AuthShell>
