@@ -110,7 +110,7 @@ function RoleToggle({ value, onChange }) {
   );
 }
 
-const emptyPolicyHolder = { fullName: "", policyNumber: "", email: "", password: "", confirm: "" };
+const emptyPolicyHolder = { fullName: "", email: "", password: "", confirm: "" };
 const emptyAdjuster = { fullName: "", orgName: "", cac: "", organizationLicenseNumber: "", licenseNumber: "", claimCategories: [], email: "", password: "", confirm: "" };
 
 // Loose format checks — these catch typos/nonsense input, not fraud.
@@ -143,7 +143,6 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
   if (!form.email.includes("@")) errors.push("Enter a valid email address.");
   if (form.password.length < 8) errors.push("Password must be at least 8 characters.");
   if (form.password !== form.confirm) errors.push("Password and Confirm Password don't match.");
-  // if (role === "applicant" && !policyHolder.policyNumber.trim()) errors.push("Enter your policy number.");
   if (role === "admin") {
     if (!adjuster.orgName.trim()) errors.push("Enter your organization's name.");
     if (!adjuster.licenseNumber.trim()) {
@@ -194,19 +193,6 @@ export function SignUp({ onSubmit, onGoLogin, onGoogleAuth, initialRole = "appli
           onChange={(e) => setForm({ ...form, fullName: e.target.value })}
           placeholder="Enter your full name"
         />
-
-        {role === "applicant" && (
-          <TextField
-            label="Policy Number"
-            icon={Hash}
-            type="text"
-            required
-            value={policyHolder.policyNumber}
-            onChange={(e) => setPolicyHolder({ ...policyHolder, policyNumber: e.target.value })}
-            placeholder="e.g. LDW/2026/12345"
-            hint="Found on your policy documents or welcome email — this locks to your account and is used to verify future claims."
-          />
-        )}
 
         {role === "applicant" ? null : (
           <>
