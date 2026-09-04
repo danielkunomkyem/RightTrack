@@ -20,6 +20,7 @@ function publicUser(user) {
     id: user._id,
     fullName: user.fullName,
     email: user.email,
+    phone: user.phone || "",
     role: user.role,
     policyNumber: user.policyNumber || "",
     orgName: user.organization?.name || user.orgName || "",
@@ -29,22 +30,47 @@ function publicUser(user) {
   };
 }
 
-async function accountBlockMessage(user) {
-  if (user.role !== "admin") return null;
+async function adjusterAccountState(user) {
+  if (user.role !== "admin") return { blocked: false, application: null };
 
   const organization = user.organization
-    ? await Organization.findById(user.organization).select("status verificationNote")
+    ? await Organization.findById(user.organization).select("name status verificationNote")
     : null;
+  const application = {
+    email: user.email,
+    fullName: user.fullName,
+    emailVerified: Boolean(user.isVerified),
+    organizationName: organization?.name || user.orgName || "",
+    organizationStatus: organization?.status || "missing",
+    adjusterStatus: user.verificationStatus,
+    note: user.verificationNote || organization?.verificationNote || "",
+  };
 
-  if (!organization) return "Your adjuster account is not linked to a verified organization. Contact support.";
-  if (organization.status === "pending") return "Your organization is still awaiting Super Admin verification.";
-  if (organization.status === "rejected") return organization.verificationNote || "Your organization's verification application was rejected.";
-  if (organization.status === "suspended") return "Your organization's access is currently suspended. Contact support.";
-  if (user.verificationStatus === "pending") return "Your organization is approved, but your adjuster credentials are still awaiting verification.";
-  if (user.verificationStatus === "rejected") return user.verificationNote || "Your adjuster account application was rejected.";
-  if (user.verificationStatus === "suspended") return user.verificationNote || "Your adjuster account is currently suspended.";
-  if (user.verificationStatus !== "approved") return "Your adjuster account is not approved.";
-  return null;
+  if (!organization) {
+    return { blocked: true, message: "Your adjuster account is not linked to a verified organization. Contact support.", application };
+  }
+  if (organization.status === "pending") {
+    return { blocked: true, message: "Your organization is still awaiting Super Admin verification.", application };
+  }
+  if (organization.status === "rejected") {
+    return { blocked: true, message: organization.verificationNote || "Your organization's verification application was rejected.", application };
+  }
+  if (organization.status === "suspended") {
+    return { blocked: true, message: "Your organization's access is currently suspended. Contact support.", application };
+  }
+  if (user.verificationStatus === "pending") {
+    return { blocked: true, message: "Your organization is approved, but your adjuster credentials are still awaiting verification.", application };
+  }
+  if (user.verificationStatus === "rejected") {
+    return { blocked: true, message: user.verificationNote || "Your adjuster account application was rejected.", application };
+  }
+  if (user.verificationStatus === "suspended") {
+    return { blocked: true, message: user.verificationNote || "Your adjuster account is currently suspended.", application };
+  }
+  if (user.verificationStatus !== "approved") {
+    return { blocked: true, message: "Your adjuster account is not approved.", application };
+  }
+  return { blocked: false, application };
 }
 
 function setOtp(user, otp, purpose) {
@@ -73,8 +99,9 @@ function issueToken(user, remember = false) {
  * POST /api/auth/signup
  * Body matches your SignUp form in Auth.jsx: { role, fullName, email, password,
  * acceptedTerms, orgName?, cac?, organizationLicenseNumber?, licenseNumber? }
- * Creates the account. Does NOT log them in — your frontend already routes
- * signup -> VerifyEmail -> enterApp, so this just creates the user record.
+ * Creates the account and sends a signup OTP. Policyholders enter the app
+ * after verifying; adjusters continue to the application-status screen while
+ * their organization and staff credentials are reviewed.
  */
 async function signup(req, res) {
   try {
@@ -82,6 +109,7 @@ async function signup(req, res) {
       role,
       fullName,
       email,
+      phone,
       password,
       acceptedTerms,
       policyNumber,
@@ -114,8 +142,12 @@ async function signup(req, res) {
     }
 
     let organization = null;
+    let createdOrganization = false;
     let categories = [];
     if (requestedRole === "admin") {
+      if (!/^\+?[0-9][0-9\s()-]{7,19}$/.test(String(phone || "").trim())) {
+        return res.status(400).json({ message: "Enter a valid work phone number." });
+      }
       const validation = validateAdjusterApplication({
         orgName,
         cac,
@@ -152,6 +184,10 @@ async function signup(req, res) {
         if (["rejected", "suspended"].includes(organization.status)) {
           return res.status(403).json({ message: "This organization cannot accept new adjuster applications. Contact support." });
         }
+        const unsupportedCategory = categories.find((category) => !organization.claimCategories.includes(category));
+        if (unsupportedCategory) {
+          return res.status(400).json({ message: `${organization.name} is not registered to handle ${unsupportedCategory} claims.` });
+        }
       } else {
         organization = await Organization.create({
           name: orgName.trim().replace(/\s+/g, " "),
@@ -162,6 +198,7 @@ async function signup(req, res) {
           status: "pending",
           auditTrail: [{ action: "submitted", note: `Submitted by ${normalizedEmail}` }],
         });
+        createdOrganization = true;
       }
 
       const duplicateStaffId = await User.findOne({
@@ -175,19 +212,20 @@ async function signup(req, res) {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const signupOtp = requestedRole === "applicant" ? generateOtp() : null;
+    const signupOtp = generateOtp();
 
     const user = await User.create({
       role: requestedRole,
       fullName: fullName.trim(),
       email: normalizedEmail,
+      phone: requestedRole === "admin" ? phone.trim() : "",
       password: hashedPassword,
       termsAcceptedAt: new Date(),
       privacyAcceptedAt: new Date(),
       policyNumber,
       organization: organization?._id || null,
       orgName: organization?.name,
-      isRegisteredOrg: requestedRole === "admin",
+      isRegisteredOrg: requestedRole === "admin" && createdOrganization,
       cac: organization?.cacNumber,
       organizationLicenseNumber: organization?.naicomLicenseNumber,
       licenseNumber: requestedRole === "admin" ? normalizeIdentifier(licenseNumber) : undefined,
@@ -195,10 +233,10 @@ async function signup(req, res) {
       verificationHistory: requestedRole === "admin"
         ? [{ status: "pending", note: "Adjuster credentials submitted for review." }]
         : [],
-      otpHash: signupOtp ? hashOtp(signupOtp) : null,
-      otpExpiresAt: signupOtp ? new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000) : null,
+      otpHash: hashOtp(signupOtp),
+      otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000),
       otpAttempts: 0,
-      otpPurpose: signupOtp ? "signup" : null,
+      otpPurpose: "signup",
     });
 
     if (organization && !organization.submittedBy) {
@@ -207,21 +245,19 @@ async function signup(req, res) {
     }
 
     let verificationEmailSent = null;
-    if (signupOtp) {
-      try {
-        await sendSignupVerificationEmail(user.email, signupOtp);
-        verificationEmailSent = true;
-      } catch (emailError) {
-        verificationEmailSent = false;
-        console.error("Signup verification delivery failed:", emailError.message);
-      }
+    try {
+      await sendSignupVerificationEmail(user.email, signupOtp, requestedRole);
+      verificationEmailSent = true;
+    } catch (emailError) {
+      verificationEmailSent = false;
+      console.error("Signup verification delivery failed:", emailError.message);
     }
 
     return res.status(201).json({
       message: requestedRole === "admin"
-        ? organization.status === "approved"
-          ? "Application received. Your organization is approved; a Super Admin must now verify your staff credentials."
-          : "Application received. A Super Admin must approve the organization first, then verify your staff credentials."
+        ? verificationEmailSent
+          ? "Application received. Enter the OTP sent to your work email before your organization and staff credentials can be approved."
+          : "Application received, but the verification email could not be delivered. Request a new code on the verification screen."
         : verificationEmailSent
           ? "Account created. Enter the OTP sent to your email to verify your policyholder account."
           : "Account created, but the verification email could not be delivered. Use Request a new one on the verification screen.",
@@ -245,9 +281,9 @@ async function verifySignupOtp(req, res) {
       return res.status(400).json({ message: "Email and OTP are required." });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase().trim(), role: "applicant" });
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
     if (!user || user.isVerified || user.otpPurpose !== "signup" || !user.otpHash || !user.otpExpiresAt) {
-      return res.status(400).json({ message: "No pending policyholder verification was found." });
+      return res.status(400).json({ message: "No pending account verification was found." });
     }
     if (user.otpExpiresAt < new Date()) {
       clearOtp(user);
@@ -269,6 +305,15 @@ async function verifySignupOtp(req, res) {
     user.isVerified = true;
     await user.save();
 
+    if (user.role === "admin") {
+      const state = await adjusterAccountState(user);
+      return res.status(200).json({
+        message: "Work email verified. Your application is now waiting for organization and adjuster approval.",
+        user: publicUser(user),
+        application: state.application,
+      });
+    }
+
     return res.status(200).json({
       message: "Policyholder email verified successfully.",
       token: issueToken(user, remember),
@@ -283,17 +328,17 @@ async function verifySignupOtp(req, res) {
 async function resendSignupOtp(req, res) {
   try {
     const email = (req.body.email || "").toLowerCase().trim();
-    const user = await User.findOne({ email, role: "applicant" });
+    const user = await User.findOne({ email });
     if (!user || user.isVerified) {
-      return res.status(400).json({ message: "No unverified policyholder account was found." });
+      return res.status(400).json({ message: "No unverified account was found." });
     }
 
     const otp = generateOtp();
     setOtp(user, otp, "signup");
     await user.save();
-    await sendSignupVerificationEmail(user.email, otp);
+    await sendSignupVerificationEmail(user.email, otp, user.role);
 
-    return res.status(200).json({ message: "A new policyholder verification code has been sent." });
+    return res.status(200).json({ message: "A new account verification code has been sent." });
   } catch (err) {
     console.error("Resend signup OTP error:", err);
     return res.status(500).json({ message: "The verification email could not be sent. Please try again." });
@@ -326,16 +371,25 @@ async function login(req, res) {
     if (requestedRole && user.role !== requestedRole) {
       return res.status(403).json({ message: "This account is registered for a different account type." });
     }
-    if (user.role === "applicant" && !user.isVerified) {
+    if (user.role !== "superadmin" && !user.isVerified) {
       return res.status(403).json({
         code: "EMAIL_NOT_VERIFIED",
         message: "Verify your email with the sign-up OTP before logging in.",
         email: user.email,
+        role: user.role,
       });
     }
 
-    const blocked = await accountBlockMessage(user);
-    if (blocked) return res.status(403).json({ message: blocked });
+    const accountState = await adjusterAccountState(user);
+    if (accountState.blocked) {
+      return res.status(403).json({
+        code: "ACCOUNT_PENDING",
+        message: accountState.message,
+        email: user.email,
+        role: user.role,
+        application: accountState.application,
+      });
+    }
 
     const otp = generateOtp();
     setOtp(user, otp, "login");
@@ -383,11 +437,17 @@ async function verifyOtpHandler(req, res) {
       return res.status(429).json({ message: "Too many failed attempts. Please log in again." });
     }
 
-    const blocked = await accountBlockMessage(user);
-    if (blocked) {
+    const accountState = await adjusterAccountState(user);
+    if (accountState.blocked) {
       clearOtp(user);
       await user.save();
-      return res.status(403).json({ message: blocked });
+      return res.status(403).json({
+        code: "ACCOUNT_PENDING",
+        message: accountState.message,
+        email: user.email,
+        role: user.role,
+        application: accountState.application,
+      });
     }
 
     const isValid = verifyOtp(otp, user.otpHash);

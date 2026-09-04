@@ -4,6 +4,7 @@ const userSchema = new mongoose.Schema(
   {
     fullName: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    phone: { type: String, trim: true, default: "" },
     password: {
       type: String,
       required: function () { return !this.isGoogleAccount; }, // Google accounts don't set a password

@@ -116,6 +116,9 @@ function VerificationQueue({ pushToast }) {
                   <div>
                     <p className="font-display font-semibold text-navy-900">{organization.name}</p>
                     <p className="text-xs text-ink-500">Submitted by {organization.submittedBy?.fullName || "an adjuster"}</p>
+                    <p className={`text-[11px] font-semibold mt-1 ${organization.submittedBy?.isVerified ? "text-emerald-700" : "text-amber-700"}`}>
+                      Work email {organization.submittedBy?.isVerified ? "verified" : "not verified"}
+                    </p>
                   </div>
                   <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset bg-amber-50 text-amber-700 ring-amber-200">Pending</span>
                 </div>
@@ -129,7 +132,7 @@ function VerificationQueue({ pushToast }) {
                 </div>
                 <div className="flex gap-2 mt-4">
                   <button onClick={() => setRejecting({ type: "organization", item: organization })} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-red-50 text-red-700 hover:bg-red-100">Reject</button>
-                  <button onClick={() => handleApproveOrganization(organization)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100">Approve organization</button>
+                  <button disabled={!organization.submittedBy?.isVerified} title={organization.submittedBy?.isVerified ? "Approve this organization" : "The submitting adjuster must verify their work email first"} onClick={() => handleApproveOrganization(organization)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed">Approve organization</button>
                 </div>
               </Card>
             ))}
@@ -155,6 +158,7 @@ function VerificationQueue({ pushToast }) {
               <div>
                 <p className="font-display font-semibold text-navy-900">{a.fullName}</p>
                 <p className="text-xs text-ink-500">{a.email}</p>
+                <p className={`text-[11px] font-semibold mt-1 ${a.isVerified ? "text-emerald-700" : "text-amber-700"}`}>Work email {a.isVerified ? "verified" : "not verified"}</p>
               </div>
               <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ${organizationStatusClass[organizationStatus]}`}>Org {organizationStatus}</span>
             </div>
@@ -172,7 +176,7 @@ function VerificationQueue({ pushToast }) {
             </div>
             <div className="flex gap-2 mt-4">
               <button onClick={() => setRejecting({ type: "adjuster", item: a })} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-red-50 text-red-700 hover:bg-red-100">Reject</button>
-              <button disabled={!organizationApproved} title={organizationApproved ? "Approve this adjuster" : "Approve the organization first"} onClick={() => handleApprove(a)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed">Approve adjuster</button>
+              <button disabled={!organizationApproved || !a.isVerified} title={!a.isVerified ? "The adjuster must verify their work email first" : organizationApproved ? "Approve this adjuster" : "Approve the organization first"} onClick={() => handleApprove(a)} className="flex-1 text-xs py-2 rounded-xl font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed">Approve adjuster</button>
             </div>
           </Card>
               );

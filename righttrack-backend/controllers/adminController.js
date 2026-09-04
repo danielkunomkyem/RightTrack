@@ -11,6 +11,7 @@ function publicAdjuster(user) {
     id: user._id,
     fullName: user.fullName,
     email: user.email,
+    phone: user.phone,
     organization: user.organization,
     licenseNumber: user.licenseNumber,
     claimCategories: user.claimCategories,
@@ -24,7 +25,7 @@ async function listPendingOrganizations(req, res) {
   try {
     const organizations = await Organization.find({ status: "pending" })
       .select("name cacNumber naicomLicenseNumber claimCategories status submittedBy createdAt auditTrail")
-      .populate("submittedBy", "fullName email licenseNumber")
+      .populate("submittedBy", "fullName email licenseNumber isVerified")
       .sort({ createdAt: 1 });
 
     return res.status(200).json({ organizations });
@@ -40,6 +41,12 @@ async function approveOrganization(req, res) {
 
     const organization = await Organization.findOne({ _id: req.params.id, status: "pending" });
     if (!organization) return res.status(404).json({ message: "Pending organization not found." });
+    const submittingUser = organization.submittedBy
+      ? await User.findById(organization.submittedBy).select("isVerified")
+      : null;
+    if (!submittingUser?.isVerified) {
+      return res.status(409).json({ message: "The submitting adjuster must verify their work email before this organization can be approved." });
+    }
 
     const now = new Date();
     organization.status = "approved";
@@ -88,7 +95,7 @@ async function rejectOrganization(req, res) {
 async function listPendingAdjusters(req, res) {
   try {
     const adjusters = await User.find({ role: "admin", verificationStatus: "pending" })
-      .select("fullName email organization orgName licenseNumber cac organizationLicenseNumber claimCategories createdAt")
+      .select("fullName email phone isVerified organization orgName licenseNumber cac organizationLicenseNumber claimCategories createdAt")
       .populate("organization", "name status cacNumber naicomLicenseNumber claimCategories")
       .sort({ createdAt: 1 });
 
@@ -106,6 +113,9 @@ async function approveAdjuster(req, res) {
     const user = await User.findOne({ _id: req.params.id, role: "admin", verificationStatus: "pending" })
       .populate("organization", "name status");
     if (!user) return res.status(404).json({ message: "Pending adjuster not found." });
+    if (!user.isVerified) {
+      return res.status(409).json({ message: "The adjuster must verify their work email before approval." });
+    }
     if (!user.organization || user.organization.status !== "approved") {
       return res.status(409).json({ message: "Approve the adjuster's organization before approving this account." });
     }

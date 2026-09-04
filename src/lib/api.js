@@ -11,6 +11,8 @@ async function request(path, body) {
     const error = new Error(data.message || "Something went wrong. Please try again.");
     error.code = data.code;
     error.email = data.email;
+    error.role = data.role;
+    error.application = data.application;
     throw error;
   }
   return data;

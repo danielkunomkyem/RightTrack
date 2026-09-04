@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { Mail, Lock, ArrowLeft, User, Hash, Building2, BadgeCheck, ShieldCheck, UserRound, ShieldAlert, Check, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, ArrowLeft, User, Phone, Hash, Building2, BadgeCheck, ShieldCheck, UserRound, ShieldAlert, Check, Eye, EyeOff } from "lucide-react";
 import Logo from "../components/Logo.jsx";
 import { CATEGORY_META } from "../lib/constants.js";
 import { forgotPasswordRequest, verifyResetOtpRequest, resetPasswordRequest } from "../lib/api.js";
@@ -111,7 +111,7 @@ function RoleToggle({ value, onChange }) {
 }
 
 const emptyPolicyHolder = { fullName: "", email: "", password: "", confirm: "" };
-const emptyAdjuster = { fullName: "", orgName: "", cac: "", organizationLicenseNumber: "", licenseNumber: "", claimCategories: [], email: "", password: "", confirm: "" };
+const emptyAdjuster = { fullName: "", orgName: "", cac: "", organizationLicenseNumber: "", licenseNumber: "", claimCategories: [], email: "", phone: "", password: "", confirm: "" };
 
 // Loose format checks — these catch typos/nonsense input, not fraud.
 // e.g. "ADJ-2451", "NAICOM-ADJ-00214", "LIC12345"
@@ -139,6 +139,7 @@ export function SignUp({ onSubmit, onGoLogin, onTerms, onPrivacy, onRoleChange, 
   if (form.password !== form.confirm) errors.push("Password and Confirm Password don't match.");
   if (!acceptedTerms) errors.push("Accept the Terms of Service and Privacy Policy.");
   if (role === "admin") {
+    if (!/^\+?[0-9][0-9\s()-]{7,19}$/.test(adjuster.phone.trim())) errors.push("Enter a valid work phone number.");
     if (!adjuster.orgName.trim()) errors.push("Enter your organization's name.");
     if (!adjuster.licenseNumber.trim()) {
       errors.push("Enter your Adjuster License / Staff ID.");
@@ -268,7 +269,7 @@ export function SignUp({ onSubmit, onGoLogin, onTerms, onPrivacy, onRoleChange, 
         )}
 
         <TextField
-          label="Email Address"
+          label={role === "admin" ? "Work Email Address" : "Email Address"}
           icon={Mail}
           type="email"
           required
@@ -277,6 +278,17 @@ export function SignUp({ onSubmit, onGoLogin, onTerms, onPrivacy, onRoleChange, 
           placeholder="Enter your email address"
           hint={role === "applicant" ? "We'll send a 6-digit OTP here to activate your policyholder account." : "Use your work email for organization verification."}
         />
+        {role === "admin" && (
+          <TextField
+            label="Work Phone Number"
+            icon={Phone}
+            type="tel"
+            required
+            value={adjuster.phone}
+            onChange={(e) => setAdjuster({ ...adjuster, phone: e.target.value })}
+            placeholder="e.g. +234 801 234 5678"
+          />
+        )}
         <TextField
           label="Password"
           icon={Lock}
@@ -695,6 +707,85 @@ export function VerifyEmail({ email, onVerified, onBack, onResend, loading, erro
         <button type="button" disabled={loading} onClick={onResend} className="font-semibold text-bearing-600 hover:underline disabled:opacity-50">Request a new one</button>
         {resendStatus && <span className="block text-xs text-ink-400 mt-1">{resendStatus}</span>}
       </p>
+    </AuthShell>
+  );
+}
+
+const APPLICATION_STATUS_META = {
+  approved: { label: "Approved", cls: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
+  pending: { label: "Pending", cls: "bg-amber-50 text-amber-700 ring-amber-200" },
+  rejected: { label: "Rejected", cls: "bg-red-50 text-red-700 ring-red-200" },
+  suspended: { label: "Suspended", cls: "bg-red-50 text-red-700 ring-red-200" },
+  missing: { label: "Needs attention", cls: "bg-red-50 text-red-700 ring-red-200" },
+};
+
+function ApplicationStatusRow({ icon: Icon, title, detail, status }) {
+  const meta = APPLICATION_STATUS_META[status] || APPLICATION_STATUS_META.pending;
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-ink-900/10 p-3.5">
+      <div className="flex items-start gap-3 min-w-0">
+        <div className="w-9 h-9 rounded-xl bg-navy-50 text-navy-700 flex items-center justify-center shrink-0">
+          <Icon className="w-4 h-4" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-navy-900">{title}</p>
+          <p className="text-xs text-ink-500 mt-0.5 break-words">{detail}</p>
+        </div>
+      </div>
+      <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ring-inset shrink-0 ${meta.cls}`}>{meta.label}</span>
+    </div>
+  );
+}
+
+export function AdjusterApplicationStatus({ application, onLogin }) {
+  const emailStatus = application?.emailVerified ? "approved" : "pending";
+  const organizationStatus = application?.organizationStatus || "pending";
+  const adjusterStatus = application?.adjusterStatus || "pending";
+  const active = emailStatus === "approved" && organizationStatus === "approved" && adjusterStatus === "approved";
+
+  return (
+    <AuthShell wide>
+      <div className="flex justify-center mb-6"><Logo size="lg" /></div>
+      <h1 className="font-display text-xl font-semibold text-navy-900 text-center">Adjuster application status</h1>
+      <p className="text-sm text-ink-500 text-center mt-1">
+        {active ? "Your account is approved and ready to use." : "Your email is checked first, followed by your organization and staff credentials."}
+      </p>
+
+      <div className="mt-6 space-y-3">
+        <ApplicationStatusRow
+          icon={Mail}
+          title="Work email"
+          detail={application?.email || "Your registered work email"}
+          status={emailStatus}
+        />
+        <ApplicationStatusRow
+          icon={Building2}
+          title="Organization verification"
+          detail={application?.organizationName || "Insurance organization"}
+          status={organizationStatus}
+        />
+        <ApplicationStatusRow
+          icon={BadgeCheck}
+          title="Adjuster credentials"
+          detail="Staff or adjuster identity review"
+          status={adjusterStatus}
+        />
+      </div>
+
+      {application?.note && (
+        <div className="mt-4 text-xs text-red-700 bg-red-50 ring-1 ring-red-200 rounded-xl px-3.5 py-3">
+          <span className="font-semibold">Review note:</span> {application.note}
+        </div>
+      )}
+
+      <p className="text-xs text-ink-400 mt-5 text-center">
+        {active
+          ? "Log in with your work email and password. A second OTP will confirm the login."
+          : "You cannot access claims until all three checks are approved. Return later and log in to view the latest status."}
+      </p>
+      <button type="button" onClick={onLogin} className="btn-primary w-full mt-5">
+        {active ? "Log in to Adjuster Dashboard" : "Back to Log in"}
+      </button>
     </AuthShell>
   );
 }

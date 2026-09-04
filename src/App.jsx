@@ -10,7 +10,7 @@ import Faq from "./pages/Faq.jsx";
 import Blog from "./pages/Blog.jsx";
 import Privacy from "./pages/Privacy.jsx";
 import Terms from "./pages/Terms.jsx";
-import { SignUp, Login, VerifyEmail, SuperAdminLogin, ForgotPassword } from "./pages/Auth.jsx";
+import { SignUp, Login, VerifyEmail, AdjusterApplicationStatus, SuperAdminLogin, ForgotPassword } from "./pages/Auth.jsx";
 import ApplicantDashboard from "./pages/applicant/Dashboard.jsx";
 import NewClaimWizard from "./pages/applicant/NewClaim.jsx";
 import MyClaims from "./pages/applicant/MyClaims.jsx";
@@ -35,6 +35,14 @@ import { SCREEN_PATHS, appPath, resolveRoute, roleHomePath } from "./lib/routes.
 import { loginRequest, verifyOtpRequest, resendOtpRequest, signupRequest, verifySignupOtpRequest, resendSignupOtpRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
 import { initGoogleSignIn, promptGoogleSignIn } from "./lib/googleAuth.js";
 
+function savedAdjusterApplication() {
+  try {
+    return JSON.parse(sessionStorage.getItem("rt_adjuster_application")) || null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -49,6 +57,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [otpResendStatus, setOtpResendStatus] = useState("");
+  const [adjusterApplication, setAdjusterApplication] = useState(savedAdjusterApplication);
   const [sessionChecked, setSessionChecked] = useState(false);
   const [role, setRole] = useState("applicant");
   const [plan, setPlan] = useState("free");
@@ -80,6 +89,11 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem("rt_pending_remember", String(pendingRemember));
   }, [pendingRemember]);
+
+  useEffect(() => {
+    if (adjusterApplication) sessionStorage.setItem("rt_adjuster_application", JSON.stringify(adjusterApplication));
+    else sessionStorage.removeItem("rt_adjuster_application");
+  }, [adjusterApplication]);
 
   useEffect(() => {
     if (screen === "landing" && scrollTarget) return;
@@ -118,6 +132,7 @@ export default function App() {
 
   const enterApp = (r = "applicant", identity = null) => {
     setRole(r);
+    setAdjusterApplication(null);
     if (identity) {
       setProfile((prev) => ({
         ...prev,
@@ -327,6 +342,10 @@ export default function App() {
     return <Navigate to={screen === "signup-verify" ? "/login" : pendingRole === "superadmin" ? "/super-admin/login" : "/login"} replace />;
   }
 
+  if (screen === "adjuster-status" && !adjusterApplication) {
+    return <Navigate to="/login" replace />;
+  }
+
   if (screen === "landing") {
     return (
       <>
@@ -379,15 +398,11 @@ export default function App() {
               title: form.role === "admin" ? "Verification submitted" : "Account created",
               body: res.message,
             });
-            if (form.role === "applicant") {
-              setPendingEmail(res.user.email);
-              setPendingRole("applicant");
-              setPendingRemember(false);
-              setOtpResendStatus(res.verificationEmailSent === false ? "Request a new code to retry email delivery." : "");
-              setScreen("signup-verify");
-            } else {
-              setScreen("login");
-            }
+            setPendingEmail(res.user.email);
+            setPendingRole(form.role);
+            setPendingRemember(false);
+            setOtpResendStatus(res.verificationEmailSent === false ? "Request a new code to retry email delivery." : "");
+            setScreen("signup-verify");
           } catch (err) {
             pushToast({ type: "warn", title: "Sign up failed", body: err.message });
           } finally {
@@ -405,8 +420,8 @@ export default function App() {
       <>
       <VerifyEmail
         email={pendingEmail}
-        title="Verify policyholder account"
-        description="Enter the sign-up code to confirm that you own this email address."
+        title={pendingRole === "admin" ? "Verify adjuster account" : "Verify policyholder account"}
+        description={pendingRole === "admin" ? "Enter the sign-up code sent to your work email before your application can be reviewed." : "Enter the sign-up code to confirm that you own this email address."}
         onBack={() => { setAuthError(""); setScreen("login"); }}
         loading={authLoading}
         error={authError}
@@ -416,10 +431,16 @@ export default function App() {
           setAuthError("");
           try {
             const res = await verifySignupOtpRequest(pendingEmail, otp, pendingRemember);
-            localStorage.setItem("rt_token", res.token);
             setPendingEmail("");
-            pushToast({ type: "success", title: "Email verified", body: "Your policyholder account is now active." });
-            enterApp(res.user.role, res.user);
+            if (res.user.role === "admin") {
+              setAdjusterApplication(res.application);
+              pushToast({ type: "success", title: "Work email verified", body: res.message });
+              setScreen("adjuster-status");
+            } else {
+              localStorage.setItem("rt_token", res.token);
+              pushToast({ type: "success", title: "Email verified", body: "Your policyholder account is now active." });
+              enterApp(res.user.role, res.user);
+            }
           } catch (err) {
             setAuthError(err.message);
           } finally {
@@ -431,7 +452,7 @@ export default function App() {
           setAuthError("");
           try {
             await resendSignupOtpRequest(pendingEmail);
-            setOtpResendStatus("A new policyholder verification code has been sent.");
+            setOtpResendStatus("A new account verification code has been sent.");
           } catch (err) {
             setOtpResendStatus(err.message);
           }
@@ -459,11 +480,17 @@ export default function App() {
           } catch (err) {
             if (err.code === "EMAIL_NOT_VERIFIED") {
               setPendingEmail(err.email || form.email);
-              setPendingRole("applicant");
+              setPendingRole(err.role || form.role);
               setPendingRemember(form.remember);
               setOtpResendStatus("Your account still needs email verification. Request a new code if the original OTP has expired.");
               setAuthError("");
               setScreen("signup-verify");
+            } else if (err.code === "ACCOUNT_PENDING" && err.application) {
+              setPendingEmail("");
+              setPendingRole("admin");
+              setAdjusterApplication(err.application);
+              setAuthError("");
+              setScreen("adjuster-status");
             } else {
               setAuthError(err.message);
             }
@@ -480,6 +507,9 @@ export default function App() {
       <Toast toasts={toasts} />
       </>
     );
+  }
+  if (screen === "adjuster-status") {
+    return <><AdjusterApplicationStatus application={adjusterApplication} onLogin={() => { setAuthError(""); setScreen("login"); }} /><Toast toasts={toasts} /></>;
   }
   if (screen === "login-verify") {
     return (
@@ -499,7 +529,15 @@ export default function App() {
             setPendingEmail("");
             enterApp(res.user.role, res.user);
           } catch (err) {
-            setAuthError(err.message);
+            if (err.code === "ACCOUNT_PENDING" && err.application) {
+              setPendingEmail("");
+              setPendingRole("admin");
+              setAdjusterApplication(err.application);
+              setAuthError("");
+              setScreen("adjuster-status");
+            } else {
+              setAuthError(err.message);
+            }
           } finally {
             setAuthLoading(false);
           }

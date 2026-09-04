@@ -25,7 +25,7 @@ const passwordResetLimit = createRateLimit({ name: "password-reset", windowMs: 1
 // POST /api/auth/signup       -> creates the account
 router.post("/signup", signupLimit, signup);
 
-// POST /api/auth/verify-signup-otp -> verifies a new policyholder and returns a session
+// POST /api/auth/verify-signup-otp -> verifies a new account; policyholders receive a session
 router.post("/verify-signup-otp", otpLimit, verifySignupOtp);
 
 // POST /api/auth/resend-signup-otp -> replaces an expired/lost sign-up code

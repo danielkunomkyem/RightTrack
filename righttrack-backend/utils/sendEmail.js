@@ -46,17 +46,18 @@ async function sendOtpEmail(toEmail, otp) {
   return data;
 }
 
-async function sendSignupVerificationEmail(toEmail, otp) {
+async function sendSignupVerificationEmail(toEmail, otp, role = "applicant") {
+  const accountLabel = role === "admin" ? "adjuster" : "policyholder";
   const payload = {
     sender: {
       name: "RightTrack",
       email: process.env.BREVO_SENDER_EMAIL,
     },
     to: [{ email: toEmail }],
-    subject: "Verify your RightTrack policyholder account",
+    subject: `Verify your RightTrack ${accountLabel} account`,
     htmlContent: `
       <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-        <h2 style="color: #0B2545;">Verify your policyholder account</h2>
+        <h2 style="color: #0B2545;">Verify your ${accountLabel} account</h2>
         <p>Enter this one-time code in RightTrack to confirm that you own this email address. It expires in 5 minutes.</p>
         <p style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #0B2545; background: #E8F6F1; padding: 16px; text-align: center; border-radius: 8px;">
           ${otp}
