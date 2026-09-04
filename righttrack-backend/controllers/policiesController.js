@@ -1,7 +1,9 @@
 const crypto = require("crypto");
 const Policy = require("../models/Policy");
 const User = require("../models/User");
+const Organization = require("../models/Organization");
 const { sendPolicyAssignedEmail } = require("../utils/sendEmail");
+const { normalizeOrganizationName } = require("../utils/verification");
 
 function generatePolicyId() {
   return "POL-" + crypto.randomBytes(4).toString("hex").toUpperCase();
@@ -111,10 +113,53 @@ async function deactivatePolicy(req, res) {
  */
 async function findValidPolicy(policyId, policyholderEmail) {
   return Policy.findOne({
-    policyId: (policyId || "").trim(),
+    policyId: (policyId || "").trim().toUpperCase(),
     policyholderEmail: (policyholderEmail || "").toLowerCase().trim(),
     isActive: true,
   }).populate("organization", "name status");
+}
+
+/**
+ * POST /api/policies/validate
+ * Confirms that an entered policy is active and assigned to the logged-in
+ * policyholder's verified email. Only safe routing details are returned.
+ */
+async function validatePolicy(req, res) {
+  try {
+    const policyId = (req.body.policyId || "").trim().toUpperCase();
+    if (!policyId) {
+      return res.status(400).json({ message: "Enter a policy number." });
+    }
+
+    const user = await User.findById(req.user.id).select("email");
+    const policy = await findValidPolicy(policyId, user?.email);
+    if (!policy) {
+      return res.status(404).json({ message: "This policy is not active or is not assigned to your verified email." });
+    }
+
+    let organization = policy.organization;
+    if (!organization) {
+      organization = await Organization.findOne({
+        normalizedName: normalizeOrganizationName(policy.insurer),
+        status: "approved",
+      }).select("name status");
+    }
+    if (!organization || organization.status !== "approved") {
+      return res.status(409).json({ message: "The organization that issued this policy is not currently approved to receive claims." });
+    }
+
+    return res.status(200).json({
+      message: "Policy validated successfully.",
+      policy: {
+        policyId: policy.policyId,
+        insurer: organization.name,
+        category: policy.category,
+      },
+    });
+  } catch (err) {
+    console.error("Validate policy error:", err);
+    return res.status(500).json({ message: "Something went wrong." });
+  }
 }
 
 /**
@@ -132,4 +177,4 @@ async function listMyPolicies(req, res) {
   }
 }
 
-module.exports = { registerPolicy, listPolicies, deactivatePolicy, findValidPolicy, listMyPolicies };
+module.exports = { registerPolicy, listPolicies, deactivatePolicy, findValidPolicy, validatePolicy, listMyPolicies };

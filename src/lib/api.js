@@ -217,3 +217,8 @@ export function deactivatePolicyRequest(id) {
 export function listMyPoliciesRequest() {
   return policiesRequest("/mine");
 }
+
+// Policyholder: verify an entered policy and load its trusted routing details.
+export function validatePolicyRequest(policyId) {
+  return policiesRequest("/validate", { method: "POST", body: { policyId } });
+}

@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { registerPolicy, listPolicies, deactivatePolicy, listMyPolicies } = require("../controllers/policiesController");
+const { registerPolicy, listPolicies, deactivatePolicy, validatePolicy, listMyPolicies } = require("../controllers/policiesController");
 const { requireAuth, requireRole } = require("../middleware/auth");
 
 // Adjuster-only management.
@@ -10,5 +10,6 @@ router.patch("/:id/deactivate", requireAuth, requireRole("admin"), deactivatePol
 
 // Any logged-in user: see the policy numbers assigned to their own email.
 router.get("/mine", requireAuth, listMyPolicies);
+router.post("/validate", requireAuth, requireRole("applicant"), validatePolicy);
 
 module.exports = router;

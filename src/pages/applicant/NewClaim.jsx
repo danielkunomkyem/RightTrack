@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
-import { Check, ChevronRight, ArrowLeft, Star, MessageSquareText, Lock } from "lucide-react";
-import { Card, Field, Row, Select } from "../../components/UI.jsx";
+import { useState } from "react";
+import { Check, ChevronRight, ArrowLeft, Star, MessageSquareText, Lock, Loader2, ShieldCheck } from "lucide-react";
+import { Card, Field, Row } from "../../components/UI.jsx";
 import FileDrop from "../../components/FileDrop.jsx";
 import { fmtMoney, insurerRatingStats } from "../../lib/helpers.js";
+import { validatePolicyRequest } from "../../lib/api.js";
 
 function InsurerRatingPanel({ claims, insurer }) {
   if (!insurer) return null;
@@ -39,23 +40,37 @@ function InsurerRatingPanel({ claims, insurer }) {
   );
 }
 
-export default function NewClaimWizard({ claims, policies = [], profile, onSubmitClaim, pushToast }) {
+export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToast }) {
   const [step, setStep] = useState(1);
-  const [form, setForm] = useState({ fullName: profile?.fullName || "", policyId: profile?.policyId || "", amount: "", description: "" });
+  const [form, setForm] = useState({ fullName: profile?.fullName || "", policyId: "", amount: "", description: "" });
+  const [policyCheck, setPolicyCheck] = useState({ status: "idle", policy: null, message: "" });
   const [files, setFiles] = useState([]);
   const [refId, setRefId] = useState(null);
   const steps = ["Claim Details", "Upload Documents", "Review & Confirm", "Submit Claim"];
 
-  useEffect(() => {
-    if (policies.length > 0 && !policies.some((policy) => policy.policyId === form.policyId)) {
-      setForm((current) => ({ ...current, policyId: policies[0].policyId }));
-    }
-  }, [form.policyId, policies]);
+  const selectedPolicy = policyCheck.policy;
+  const policyValidated = policyCheck.status === "valid" && selectedPolicy?.policyId === form.policyId;
 
-  const selectedPolicy = policies.find((policy) => policy.policyId === form.policyId);
-
-  const canNext1 = form.fullName && selectedPolicy && Number(form.amount) > 0 && form.description.length > 10;
+  const canNext1 = form.fullName && policyValidated && Number(form.amount) > 0 && form.description.length > 10;
   const canNext2 = files.length > 0;
+
+  const updatePolicyId = (value) => {
+    setForm((current) => ({ ...current, policyId: value.toUpperCase().trimStart() }));
+    setPolicyCheck({ status: "idle", policy: null, message: "" });
+  };
+
+  const validatePolicy = async () => {
+    const policyId = form.policyId.trim();
+    if (!policyId || policyCheck.status === "checking") return;
+    setPolicyCheck({ status: "checking", policy: null, message: "Checking policy…" });
+    try {
+      const response = await validatePolicyRequest(policyId);
+      setForm((current) => ({ ...current, policyId: response.policy.policyId }));
+      setPolicyCheck({ status: "valid", policy: response.policy, message: response.message });
+    } catch (err) {
+      setPolicyCheck({ status: "invalid", policy: null, message: err.message });
+    }
+  };
 
   const submit = async () => {
     const claimId = await onSubmitClaim({
@@ -102,25 +117,44 @@ export default function NewClaimWizard({ claims, policies = [], profile, onSubmi
                 <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
               </div>
             </Field>
-            <Field label="Verified Policy">
-              <Select
-                value={form.policyId}
-                onChange={(e) => setForm({ ...form, policyId: e.target.value })}
-                disabled={policies.length === 0}
-              >
-                {policies.length === 0 && <option value="">No active policy assigned</option>}
-                {policies.map((policy) => (
-                  <option key={policy._id || policy.policyId} value={policy.policyId}>
-                    {policy.policyId} — {policy.insurer}
-                  </option>
-                ))}
-              </Select>
+            <Field label="Policy Number" full>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  value={form.policyId}
+                  onChange={(e) => updatePolicyId(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      validatePolicy();
+                    }
+                  }}
+                  placeholder="Enter your policy number, e.g. POL-4A8C12EF"
+                  className="input flex-1 font-mono uppercase"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={validatePolicy}
+                  disabled={!form.policyId.trim() || policyCheck.status === "checking"}
+                  className="btn-primary justify-center sm:min-w-36 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {policyCheck.status === "checking" ? <><Loader2 className="w-4 h-4 animate-spin" />Checking…</> : "Validate Policy"}
+                </button>
+              </div>
+              <p className="text-[11px] text-ink-400 mt-1.5">The policy must be active and assigned to the email address used for this account.</p>
+              {policyCheck.status === "valid" && (
+                <p className="mt-2 text-xs text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 shrink-0" />{policyCheck.message}
+                </p>
+              )}
+              {policyCheck.status === "invalid" && (
+                <p className="mt-2 text-xs text-red-700 bg-red-50 ring-1 ring-red-200 rounded-lg px-3 py-2">{policyCheck.message}</p>
+              )}
             </Field>
-            {(!profile?.fullName || policies.length === 0) && (
+            {!profile?.fullName && (
               <p className="sm:col-span-2 text-[11px] text-brass-600 bg-brass-500/10 rounded-lg px-3 py-2 -mt-1">
-                {!profile?.fullName
-                  ? "Your full name is missing. Update it from Settings before filing a claim."
-                  : "No active policy is assigned to your verified email. Ask your insurer to assign one before filing a claim."}
+                Your full name is missing. Update it from Settings before filing a claim.
               </p>
             )}
             <Field label="Receiving Organization" full>
