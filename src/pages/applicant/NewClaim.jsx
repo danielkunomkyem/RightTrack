@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, ChevronRight, ArrowLeft, Star, MessageSquareText, Lock, Loader2, ShieldCheck } from "lucide-react";
+import { Check, ChevronRight, ArrowLeft, Star, MessageSquareText, Loader2, ShieldCheck, Building2, Tags } from "lucide-react";
 import { Card, Field, Row } from "../../components/UI.jsx";
 import FileDrop from "../../components/FileDrop.jsx";
 import { fmtMoney, insurerRatingStats } from "../../lib/helpers.js";
@@ -40,9 +40,9 @@ function InsurerRatingPanel({ claims, insurer }) {
   );
 }
 
-export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToast }) {
+export default function NewClaimWizard({ claims, onSubmitClaim, pushToast }) {
   const [step, setStep] = useState(1);
-  const [form, setForm] = useState({ fullName: profile?.fullName || "", policyId: "", amount: "", description: "" });
+  const [form, setForm] = useState({ fullName: "", policyId: "", amount: "", description: "" });
   const [policyCheck, setPolicyCheck] = useState({ status: "idle", policy: null, message: "" });
   const [files, setFiles] = useState([]);
   const [refId, setRefId] = useState(null);
@@ -51,7 +51,7 @@ export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToa
   const selectedPolicy = policyCheck.policy;
   const policyValidated = policyCheck.status === "valid" && selectedPolicy?.policyId === form.policyId;
 
-  const canNext1 = form.fullName && policyValidated && Number(form.amount) > 0 && form.description.length > 10;
+  const canNext1 = form.fullName.trim().length >= 2 && policyValidated && Number(form.amount) > 0 && form.description.trim().length > 10;
   const canNext2 = files.length > 0;
 
   const updatePolicyId = (value) => {
@@ -74,6 +74,7 @@ export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToa
 
   const submit = async () => {
     const claimId = await onSubmitClaim({
+      fullName: form.fullName.trim(),
       policyId: form.policyId,
       amount: Number(form.amount), description: form.description, documents: files,
     });
@@ -111,11 +112,17 @@ export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToa
           <p className="font-display font-semibold text-navy-900">Claim Details</p>
           <p className="text-xs text-ink-500 mt-1 mb-5">Please provide the details of your claim.</p>
           <div className="grid sm:grid-cols-2 gap-4">
-            <Field label="Full Name">
-              <div className="input bg-ink-900/[0.03] text-ink-500 cursor-not-allowed flex items-center justify-between gap-2">
-                <span className="truncate">{form.fullName || "Not set on your profile"}</span>
-                <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
-              </div>
+            <Field label="Claimant Full Name" full>
+              <input
+                type="text"
+                value={form.fullName}
+                onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+                placeholder="Enter the full name for this claim"
+                className="input"
+                autoComplete="name"
+                required
+              />
+              <p className="text-[11px] text-ink-400 mt-1.5">Enter the claimant's name exactly as it should appear on this claim.</p>
             </Field>
             <Field label="Policy Number" full>
               <div className="flex flex-col sm:flex-row gap-2">
@@ -152,24 +159,21 @@ export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToa
                 <p className="mt-2 text-xs text-red-700 bg-red-50 ring-1 ring-red-200 rounded-lg px-3 py-2">{policyCheck.message}</p>
               )}
             </Field>
-            {!profile?.fullName && (
-              <p className="sm:col-span-2 text-[11px] text-brass-600 bg-brass-500/10 rounded-lg px-3 py-2 -mt-1">
-                Your full name is missing. Update it from Settings before filing a claim.
-              </p>
-            )}
-            <Field label="Receiving Organization" full>
-              <div className="input bg-ink-900/[0.03] text-ink-500 cursor-not-allowed flex items-center justify-between gap-2">
-                <span className="truncate">{selectedPolicy?.insurer || "Selected automatically from your policy"}</span>
-                <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
+            <div className="sm:col-span-2 rounded-xl bg-navy-50/70 ring-1 ring-navy-900/8 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">Verified routing details</p>
+              <p className="text-[11px] text-ink-400 mt-1">These details come from the validated policy and cannot be redirected from the claim form.</p>
+              <div className="grid sm:grid-cols-2 gap-3 mt-3">
+                <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-2.5 ring-1 ring-navy-900/6">
+                  <Building2 className="w-4 h-4 text-bearing-600 shrink-0" />
+                  <div className="min-w-0"><p className="text-[11px] text-ink-400">Receiving organization</p><p className="text-sm font-semibold text-navy-900 truncate">{selectedPolicy?.insurer || "Validate a policy first"}</p></div>
+                </div>
+                <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-2.5 ring-1 ring-navy-900/6">
+                  <Tags className="w-4 h-4 text-bearing-600 shrink-0" />
+                  <div className="min-w-0"><p className="text-[11px] text-ink-400">Policy category</p><p className="text-sm font-semibold text-navy-900 truncate">{selectedPolicy?.category || "Validate a policy first"}</p></div>
+                </div>
               </div>
               <InsurerRatingPanel claims={claims} insurer={selectedPolicy?.insurer} />
-            </Field>
-            <Field label="Claim Category">
-              <div className="input bg-ink-900/[0.03] text-ink-500 cursor-not-allowed flex items-center justify-between gap-2">
-                <span className="truncate">{selectedPolicy?.category || "Selected automatically from your policy"}</span>
-                <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
-              </div>
-            </Field>
+            </div>
             <Field label="Claim Amount (₦)"><input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="250000" className="input" /></Field>
             <Field label="Description of Claim" full>
               <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={4} placeholder="What happened? Please provide as much detail as possible." className="input resize-none" />

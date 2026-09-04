@@ -36,6 +36,7 @@ test("claim routing ignores browser organization and category values", async () 
   const req = {
     user: { id: "507f191e810c19729de860ea", role: "applicant" },
     body: {
+      fullName: "Chinwe Claimant",
       policyId: "POL-VERIFIED",
       insurer: "Forged Organization",
       category: "Forged Category",
@@ -60,6 +61,7 @@ test("claim routing ignores browser organization and category values", async () 
   try {
     await createClaim(req, res);
     assert.equal(statusCode, 201);
+    assert.equal(createdPayload.applicant, "Chinwe Claimant");
     assert.equal(createdPayload.policyId, "POL-VERIFIED");
     assert.equal(createdPayload.insurer, "Verified Insurance");
     assert.equal(createdPayload.category, "Health");

@@ -181,6 +181,7 @@ export default function App() {
     if (claimObj) {
       try {
         const { claim } = await createClaimRequest({
+          fullName: claimObj.fullName,
           policyId: claimObj.policyId,
           amount: claimObj.amount,
           description: claimObj.description,
@@ -574,7 +575,7 @@ export default function App() {
         <Topbar title={title} subtitle={subtitle} role={role} plan={plan} onMenu={() => setMobileOpen(true)} notifCount={notifCount} onBell={() => setNotifOpen((o) => !o)} onSettings={() => setView("settings")} avatarUrl={profile.avatarUrl} profile={profile} />
         <main className="flex-1 p-4 sm:p-8">
           {role === "applicant" && view === "dashboard" && <ApplicantDashboard claims={claims} onNav={setView} onOpenClaim={openClaim} profile={profile} />}
-          {role === "applicant" && view === "new" && <NewClaimWizard claims={claims} profile={profile} onSubmitClaim={addClaim} pushToast={pushToast} />}
+          {role === "applicant" && view === "new" && <NewClaimWizard claims={claims} onSubmitClaim={addClaim} pushToast={pushToast} />}
           {role === "applicant" && view === "claims" && <MyClaims claims={claims} onOpenClaim={openClaim} onNav={setView} />}
           {role === "applicant" && view === "policies" && <MyPolicies policies={myPolicies} />}
           {role === "applicant" && view === "detail" && selectedClaim && <ClaimDetailApplicant claim={selectedClaim} onBack={() => setView("claims")} onReupload={reupload} onRate={rate} pushToast={pushToast} />}

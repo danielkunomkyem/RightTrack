@@ -47,21 +47,25 @@ async function listClaims(req, res) {
 
 /**
  * POST /api/claims
- * Body: { policyId, amount, description, documents }
+ * Body: { fullName, policyId, amount, description, documents }
  * The policy controls the destination organization and claim category. The
  * browser is never trusted to choose either value.
  */
 async function createClaim(req, res) {
   try {
-    const { policyId, amount, description, documents } = req.body;
-    if (!policyId || !amount || !description) {
+    const { fullName, policyId, amount, description, documents } = req.body;
+    const claimantName = String(fullName || "").trim().replace(/\s+/g, " ");
+    if (!claimantName || !policyId || !amount || !description) {
       return res.status(400).json({ message: "All claim details are required." });
+    }
+    if (claimantName.length < 2 || claimantName.length > 100) {
+      return res.status(400).json({ message: "Claimant full name must be between 2 and 100 characters." });
     }
     if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
       return res.status(400).json({ message: "Claim amount must be greater than zero." });
     }
 
-    const user = await User.findById(req.user.id).select("fullName email");
+    const user = await User.findById(req.user.id).select("email");
     const policy = await findValidPolicy(policyId, user?.email);
     if (!policy) {
       return res.status(404).json({ message: "No active policy with that number is assigned to your verified email." });
@@ -83,7 +87,7 @@ async function createClaim(req, res) {
 
     const claim = await Claim.create({
       id: claimId,
-      applicant: user?.fullName || "Applicant",
+      applicant: claimantName,
       applicantUser: req.user.id,
       policyId: policy.policyId,
       organization: organization._id,

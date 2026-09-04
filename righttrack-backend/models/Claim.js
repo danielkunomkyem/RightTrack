@@ -35,7 +35,7 @@ const claimSchema = new mongoose.Schema(
 
     // Who submitted it — both the display name (kept for the existing UI)
     // and a real reference to the User account for proper per-user scoping.
-    applicant: { type: String, required: true },
+    applicant: { type: String, required: true, trim: true, minlength: 2, maxlength: 100 },
     applicantUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 
     policyId: { type: String, required: true },
