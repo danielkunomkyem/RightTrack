@@ -2,10 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, ChevronRight, ArrowLeft, Star, MessageSquareText, Lock } from "lucide-react";
 import { Card, Field, Row, Select } from "../../components/UI.jsx";
 import FileDrop from "../../components/FileDrop.jsx";
-import InsurerSearchSelect from "../../components/InsurerSearchSelect.jsx";
-import { CATEGORY_META, INSURERS } from "../../lib/constants.js";
 import { fmtMoney, insurerRatingStats } from "../../lib/helpers.js";
-import { listInsurersRequest } from "../../lib/api.js";
 
 function InsurerRatingPanel({ claims, insurer }) {
   if (!insurer) return null;
@@ -42,35 +39,27 @@ function InsurerRatingPanel({ claims, insurer }) {
   );
 }
 
-export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToast }) {
+export default function NewClaimWizard({ claims, policies = [], profile, onSubmitClaim, pushToast }) {
   const [step, setStep] = useState(1);
-  const [form, setForm] = useState({ fullName: profile?.fullName || "", policyId: profile?.policyId || "", insurer: "", category: "", amount: "", description: "" });
+  const [form, setForm] = useState({ fullName: profile?.fullName || "", policyId: profile?.policyId || "", amount: "", description: "" });
   const [files, setFiles] = useState([]);
   const [refId, setRefId] = useState(null);
-  // Static fallback allows any category, since it predates per-org category selection.
-  const [insurerOptions, setInsurerOptions] = useState(INSURERS.map((name) => ({ name, categories: Object.keys(CATEGORY_META) })));
   const steps = ["Claim Details", "Upload Documents", "Review & Confirm", "Submit Claim"];
 
-  // Pull the live, real list of approved insurer organizations — each with
-  // the specific claim categories THAT organization actually handles.
-  // Falls back to the static list if the request fails, so the form still works.
   useEffect(() => {
-    listInsurersRequest()
-      .then((res) => {
-        if (res.insurers && res.insurers.length > 0) setInsurerOptions(res.insurers);
-      })
-      .catch(() => { /* keep the static fallback list */ });
-  }, []);
+    if (policies.length > 0 && !policies.some((policy) => policy.policyId === form.policyId)) {
+      setForm((current) => ({ ...current, policyId: policies[0].policyId }));
+    }
+  }, [form.policyId, policies]);
 
-  const selectedInsurer = insurerOptions.find((o) => o.name === form.insurer);
-  const availableCategories = selectedInsurer?.categories?.length > 0 ? selectedInsurer.categories : Object.keys(CATEGORY_META);
+  const selectedPolicy = policies.find((policy) => policy.policyId === form.policyId);
 
-  const canNext1 = form.fullName && form.policyId && form.insurer && form.category && form.amount && form.description.length > 10;
+  const canNext1 = form.fullName && selectedPolicy && Number(form.amount) > 0 && form.description.length > 10;
   const canNext2 = files.length > 0;
 
   const submit = async () => {
     const claimId = await onSubmitClaim({
-      policyId: form.policyId, insurer: form.insurer, category: form.category,
+      policyId: form.policyId,
       amount: Number(form.amount), description: form.description, documents: files,
     });
     if (claimId) {
@@ -113,34 +102,39 @@ export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToa
                 <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
               </div>
             </Field>
-            <Field label="Entity / Policy ID">
-              <div className="input bg-ink-900/[0.03] text-ink-500 cursor-not-allowed flex items-center justify-between gap-2">
-                <span className="truncate">{form.policyId || "Not set on your profile"}</span>
-                <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
-              </div>
+            <Field label="Verified Policy">
+              <Select
+                value={form.policyId}
+                onChange={(e) => setForm({ ...form, policyId: e.target.value })}
+                disabled={policies.length === 0}
+              >
+                {policies.length === 0 && <option value="">No active policy assigned</option>}
+                {policies.map((policy) => (
+                  <option key={policy._id || policy.policyId} value={policy.policyId}>
+                    {policy.policyId} — {policy.insurer}
+                  </option>
+                ))}
+              </Select>
             </Field>
-            {(!profile?.fullName || !profile?.policyId) && (
+            {(!profile?.fullName || policies.length === 0) && (
               <p className="sm:col-span-2 text-[11px] text-brass-600 bg-brass-500/10 rounded-lg px-3 py-2 -mt-1">
-                Your name and policy number come from your account profile and can't be edited here. Update them from Settings before filing a claim if either is missing.
+                {!profile?.fullName
+                  ? "Your full name is missing. Update it from Settings before filing a claim."
+                  : "No active policy is assigned to your verified email. Ask your insurer to assign one before filing a claim."}
               </p>
             )}
-            <Field label="Insurer" full>
-              <InsurerSearchSelect
-                options={insurerOptions.map((o) => o.name)}
-                value={form.insurer}
-                onChange={(insurer) => setForm({ ...form, insurer, category: "" })}
-                placeholder="Type to search for the insurer on your policy…"
-              />
-              <InsurerRatingPanel claims={claims} insurer={form.insurer} />
+            <Field label="Receiving Organization" full>
+              <div className="input bg-ink-900/[0.03] text-ink-500 cursor-not-allowed flex items-center justify-between gap-2">
+                <span className="truncate">{selectedPolicy?.insurer || "Selected automatically from your policy"}</span>
+                <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
+              </div>
+              <InsurerRatingPanel claims={claims} insurer={selectedPolicy?.insurer} />
             </Field>
             <Field label="Claim Category">
-              <Select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} disabled={!form.insurer}>
-                <option value="" disabled>{form.insurer ? "Select a category" : "Choose an insurer first"}</option>
-                {availableCategories.map((c) => <option key={c}>{c}</option>)}
-              </Select>
-              {form.insurer && availableCategories.length < Object.keys(CATEGORY_META).length && (
-                <span className="text-[11px] text-ink-400 mt-1 block">Showing only the categories {form.insurer} handles.</span>
-              )}
+              <div className="input bg-ink-900/[0.03] text-ink-500 cursor-not-allowed flex items-center justify-between gap-2">
+                <span className="truncate">{selectedPolicy?.category || "Selected automatically from your policy"}</span>
+                <Lock className="w-3.5 h-3.5 shrink-0 text-ink-300" />
+              </div>
             </Field>
             <Field label="Claim Amount (₦)"><input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="250000" className="input" /></Field>
             <Field label="Description of Claim" full>
@@ -173,7 +167,7 @@ export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToa
             <div>
               <p className="text-xs font-bold uppercase text-ink-500 mb-2">Claim Details</p>
               <dl className="text-sm space-y-2">
-                <Row k="Full Name" v={form.fullName} /><Row k="Policy ID" v={form.policyId} /><Row k="Insurer" v={form.insurer} /><Row k="Category" v={form.category} />
+                <Row k="Full Name" v={form.fullName} /><Row k="Policy ID" v={form.policyId} /><Row k="Organization" v={selectedPolicy?.insurer} /><Row k="Category" v={selectedPolicy?.category} />
                 <Row k="Amount" v={fmtMoney(form.amount || 0)} />
               </dl>
               <p className="text-xs font-bold uppercase text-ink-500 mt-4 mb-1.5">Description</p>
@@ -228,7 +222,7 @@ export default function NewClaimWizard({ claims, profile, onSubmitClaim, pushToa
           <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto"><Check className="w-6 h-6" /></div>
           <p className="font-display text-xl font-semibold text-navy-900 mt-4">Claim Submitted Successfully!</p>
           <p className="text-sm text-ink-500 mt-1">Your claim has been received and is now being processed.</p>
-          <p className="text-xs text-ink-500 mt-1">Routed to <span className="font-semibold text-navy-900">{form.insurer}</span>.</p>
+          <p className="text-xs text-ink-500 mt-1">Automatically routed to <span className="font-semibold text-navy-900">{selectedPolicy?.insurer}</span> from your verified policy.</p>
           <div className="grid grid-cols-3 gap-3 sm:gap-4 mt-6 max-w-md mx-auto">
             <div><p className="text-[11px] text-ink-500">Reference ID</p><p className="font-mono font-semibold text-navy-900 text-sm">{refId}</p></div>
             <div><p className="text-[11px] text-ink-500">Status</p><p className="font-semibold text-emerald-600 text-sm">Submitted</p></div>

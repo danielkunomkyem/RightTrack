@@ -1,6 +1,5 @@
 const Claim = require("../models/Claim");
 const Message = require("../models/Message");
-const User = require("../models/User");
 
 // Checks whether the logged-in user is allowed to see/send messages on this
 // claim: the policyholder who owns it, an adjuster from the same insurer,
@@ -9,8 +8,9 @@ async function canAccessClaim(claim, reqUser) {
   if (reqUser.role === "superadmin") return true;
   if (reqUser.role === "applicant") return claim.applicantUser.toString() === reqUser.id;
   if (reqUser.role === "admin") {
-    const adjuster = await User.findById(reqUser.id).select("orgName");
-    return adjuster?.orgName === claim.insurer;
+    return claim.organization
+      ? claim.organization.toString() === reqUser.organizationId
+      : claim.insurer === reqUser.orgName;
   }
   return false;
 }

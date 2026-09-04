@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LayoutDashboard, Plus, Folder, Code2, LogOut, Sparkles, CreditCard, ShieldAlert, UserRound, Settings, X } from "lucide-react";
+import { LayoutDashboard, Plus, Folder, FileBadge, Code2, LogOut, Sparkles, CreditCard, ShieldAlert, UserRound, Settings, X } from "lucide-react";
 import Logo from "./Logo.jsx";
 import { Modal } from "./UI.jsx";
 import { isPremiumPlan } from "../lib/constants.js";
@@ -10,12 +10,14 @@ export default function Sidebar({ role, plan, active, onNav, onExit, mobileOpen,
     ["dashboard", "Dashboard", LayoutDashboard],
     ["new", "New Claim", Plus],
     ["claims", "My Claims", Folder],
+    ["policies", "My Policies", FileBadge],
   ];
   const isPremium = isPremiumPlan(plan);
   const billingLabel = plan === "trial" ? "Manage Subscription" : plan === "premium" ? "Plans & Billing" : "Start Free Trial";
   const adminNav = [
     ["dashboard", "Dashboard", LayoutDashboard],
     ["queue", "Claims Queue", Folder],
+    ["policies", "Manage Policies", FileBadge],
     ["api", "Developer / API", Code2],
     ["billing", billingLabel, isPremium ? CreditCard : Sparkles],
   ];

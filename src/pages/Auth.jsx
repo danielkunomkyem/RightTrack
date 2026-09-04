@@ -120,7 +120,7 @@ const LICENSE_PATTERN = /^[A-Za-z]{2,}[-\s]?[A-Za-z0-9-]{3,}$/;
 const CAC_PATTERN = /^(RC|BN|IT)\s?\d{5,7}$/i;
 const ORGANIZATION_LICENSE_PATTERN = /^[A-Za-z]{2,}(?:[-/\s]?[A-Za-z0-9]+){1,}$/;
 
-export function SignUp({ onSubmit, onGoLogin, onTerms, onPrivacy, initialRole = "applicant", loading }) {
+export function SignUp({ onSubmit, onGoLogin, onTerms, onPrivacy, onRoleChange, initialRole = "applicant", loading }) {
   const [role, setRole] = useState(initialRole);
   const [policyHolder, setPolicyHolder] = useState(emptyPolicyHolder);
   const [adjuster, setAdjuster] = useState(emptyAdjuster);
@@ -175,7 +175,13 @@ export function SignUp({ onSubmit, onGoLogin, onTerms, onPrivacy, initialRole = 
       <p className="text-sm text-ink-500 text-center mt-1">Tell us which kind of account you need</p>
 
       <div className="mt-6">
-        <RoleToggle value={role} onChange={setRole} />
+        <RoleToggle
+          value={role}
+          onChange={(nextRole) => {
+            setRole(nextRole);
+            onRoleChange?.(nextRole);
+          }}
+        />
       </div>
 
       <form className="space-y-4" onSubmit={handleSubmit}>

@@ -2,16 +2,27 @@ const crypto = require("crypto");
 const Claim = require("../models/Claim");
 const User = require("../models/User");
 const Organization = require("../models/Organization");
+const { findValidPolicy } = require("./policiesController");
+const { normalizeOrganizationName } = require("../utils/verification");
 
 function generateClaimId() {
   return "CLM-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+}
+
+function organizationScope(reqUser) {
+  return {
+    $or: [
+      { organization: reqUser.organizationId },
+      { organization: null, insurer: reqUser.orgName },
+    ],
+  };
 }
 
 /**
  * GET /api/claims
  * Returns claims scoped to the logged-in user's role:
  * - applicant  -> only their own claims
- * - admin      -> only claims for their organization (insurer match)
+ * - admin      -> only claims routed to their verified organization
  * - superadmin -> every claim
  */
 async function listClaims(req, res) {
@@ -22,8 +33,7 @@ async function listClaims(req, res) {
     if (role === "applicant") {
       filter = { applicantUser: id };
     } else if (role === "admin") {
-      const user = await User.findById(id).select("orgName");
-      filter = { insurer: user?.orgName || "__none__" };
+      filter = organizationScope(req.user);
     }
     // superadmin: no filter, sees everything
 
@@ -37,17 +47,37 @@ async function listClaims(req, res) {
 
 /**
  * POST /api/claims
- * Body: { policyId, insurer, category, amount, description, documents }
- * Creates a new claim, status "submitted".
+ * Body: { policyId, amount, description, documents }
+ * The policy controls the destination organization and claim category. The
+ * browser is never trusted to choose either value.
  */
 async function createClaim(req, res) {
   try {
-    const { policyId, insurer, category, amount, description, documents } = req.body;
-    if (!policyId || !insurer || !category || !amount || !description) {
+    const { policyId, amount, description, documents } = req.body;
+    if (!policyId || !amount || !description) {
       return res.status(400).json({ message: "All claim details are required." });
     }
+    if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      return res.status(400).json({ message: "Claim amount must be greater than zero." });
+    }
 
-    const user = await User.findById(req.user.id).select("fullName");
+    const user = await User.findById(req.user.id).select("fullName email");
+    const policy = await findValidPolicy(policyId, user?.email);
+    if (!policy) {
+      return res.status(404).json({ message: "No active policy with that number is assigned to your verified email." });
+    }
+
+    let organization = policy.organization;
+    if (!organization) {
+      organization = await Organization.findOne({
+        normalizedName: normalizeOrganizationName(policy.insurer),
+        status: "approved",
+      }).select("name status");
+    }
+    if (!organization || organization.status !== "approved") {
+      return res.status(409).json({ message: "The organization that issued this policy is not currently approved to receive claims." });
+    }
+
     const now = new Date();
     const claimId = generateClaimId();
 
@@ -55,16 +85,17 @@ async function createClaim(req, res) {
       id: claimId,
       applicant: user?.fullName || "Applicant",
       applicantUser: req.user.id,
-      policyId,
-      insurer,
-      category,
+      policyId: policy.policyId,
+      organization: organization._id,
+      insurer: organization.name,
+      category: policy.category,
       amount: Number(amount),
       description,
       status: "submitted",
       documents: documents || [],
       submittedAt: now.toISOString(),
       history: [
-        { ts: now.toISOString(), label: "Claim submitted", detail: `Submitted by applicant via web portal to ${insurer}` },
+        { ts: now.toISOString(), label: "Claim submitted", detail: `Automatically routed from policy ${policy.policyId} to ${organization.name}` },
         { ts: new Date(now.getTime() + 1000).toISOString(), label: "Document validation passed", detail: `${(documents || []).length} file(s) verified — format & size checks OK` },
       ],
     });
@@ -133,8 +164,8 @@ async function rateClaim(req, res) {
  */
 async function startReview(req, res) {
   try {
-    const adjusterUser = await User.findById(req.user.id).select("fullName orgName");
-    const claim = await Claim.findOne({ id: req.params.id, insurer: adjusterUser?.orgName });
+    const adjusterUser = await User.findById(req.user.id).select("fullName");
+    const claim = await Claim.findOne({ id: req.params.id, ...organizationScope(req.user) });
     if (!claim) return res.status(404).json({ message: "Claim not found." });
 
     const adjusterName = adjusterUser?.fullName || "Assigned Adjuster";
@@ -165,8 +196,7 @@ async function requestInfo(req, res) {
     const { notes } = req.body;
     if (!notes) return res.status(400).json({ message: "Please provide a reason for the request." });
 
-    const adjusterUser = await User.findById(req.user.id).select("orgName");
-    const claim = await Claim.findOne({ id: req.params.id, insurer: adjusterUser?.orgName });
+    const claim = await Claim.findOne({ id: req.params.id, ...organizationScope(req.user) });
     if (!claim) return res.status(404).json({ message: "Claim not found." });
 
     const now = new Date();
@@ -199,8 +229,7 @@ async function decideClaim(req, res) {
 
     let filter = { id: req.params.id };
     if (req.user.role === "admin") {
-      const adjusterUser = await User.findById(req.user.id).select("orgName");
-      filter.insurer = adjusterUser?.orgName;
+      filter = { ...filter, ...organizationScope(req.user) };
     }
     // superadmin can decide on any claim, no extra filter
 

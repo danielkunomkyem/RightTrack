@@ -1,127 +1,49 @@
-import { useEffect, useState } from "react";
-import { Plus, Trash2, Mail } from "lucide-react";
-import { Card, Field, Modal } from "../../components/UI.jsx";
+import { Building2, FileBadge, ShieldCheck } from "lucide-react";
+import { Card } from "../../components/UI.jsx";
 import { CATEGORY_META } from "../../lib/constants.js";
-import { registerPolicyRequest, listPoliciesRequest, deactivatePolicyRequest } from "../../lib/api.js";
+import { fmtDate } from "../../lib/helpers.js";
 
-export default function ManagePolicies({ pushToast }) {
-  const [policies, setPolicies] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ policyholderEmail: "", category: Object.keys(CATEGORY_META)[0] });
-  const [saving, setSaving] = useState(false);
-
-  const load = () => {
-    setLoading(true);
-    listPoliciesRequest()
-      .then((res) => setPolicies(res.policies))
-      .catch((err) => pushToast?.({ type: "warn", title: "Couldn't load policies", body: err.message }))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const handleAdd = async (e) => {
-    e.preventDefault();
-    if (!form.policyholderEmail.trim() || saving) return;
-    setSaving(true);
-    try {
-      const res = await registerPolicyRequest(form.policyholderEmail.trim(), form.category);
-      setPolicies((prev) => [res.policy, ...prev]);
-      setForm({ policyholderEmail: "", category: Object.keys(CATEGORY_META)[0] });
-      setAdding(false);
-      pushToast?.({ type: "success", title: "Policy assigned", body: `${res.policy.policyId} was emailed to ${res.policy.policyholderEmail}.` });
-    } catch (err) {
-      pushToast?.({ type: "warn", title: "Couldn't assign policy", body: err.message });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDeactivate = async (policy) => {
-    try {
-      await deactivatePolicyRequest(policy._id);
-      setPolicies((prev) => prev.map((p) => (p._id === policy._id ? { ...p, isActive: false } : p)));
-      pushToast?.({ type: "warn", title: "Policy deactivated", body: `${policy.policyId} can no longer be used for new claims.` });
-    } catch (err) {
-      pushToast?.({ type: "warn", title: "Couldn't deactivate policy", body: err.message });
-    }
-  };
-
+export default function MyPolicies({ policies = [] }) {
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="font-display text-2xl font-semibold text-navy-900">Manage Policies</h1>
-          <p className="text-sm text-ink-500 mt-1">Assign a unique, auto-generated policy number to each policyholder — only these can be used to file a claim.</p>
-        </div>
-        <button onClick={() => setAdding(true)} className="btn-primary text-sm"><Plus className="w-4 h-4" />Assign Policy</button>
+      <div className="mb-6">
+        <h1 className="font-display text-2xl font-semibold text-navy-900">My Policies</h1>
+        <p className="text-sm text-ink-500 mt-1">Active policies assigned to your verified email by an approved organization.</p>
       </div>
 
-      <Card className="p-0 overflow-hidden">
-        {loading ? (
-          <p className="text-sm text-ink-400 text-center py-10">Loading…</p>
-        ) : policies.length === 0 ? (
-          <p className="text-sm text-ink-400 text-center py-10">No policies assigned yet. Click "Assign Policy" to add your first one.</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-ink-900/10 text-left text-ink-500">
-                <th className="px-5 py-3 font-medium">Policy ID</th>
-                <th className="px-5 py-3 font-medium">Category</th>
-                <th className="px-5 py-3 font-medium">Policyholder</th>
-                <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {policies.map((p) => (
-                <tr key={p._id} className="border-b border-ink-900/6 last:border-0">
-                  <td className="px-5 py-3 font-semibold text-navy-900">{p.policyId}</td>
-                  <td className="px-5 py-3 text-ink-700">{p.category}</td>
-                  <td className="px-5 py-3 text-ink-500">{p.policyholderEmail}</td>
-                  <td className="px-5 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${p.isActive ? "bg-emerald-50 text-emerald-700" : "bg-ink-900/5 text-ink-400"}`}>
-                      {p.isActive ? "Active" : "Deactivated"}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    {p.isActive && (
-                      <button onClick={() => handleDeactivate(p)} className="text-ink-400 hover:text-red-600" aria-label="Deactivate">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
-
-      <Modal open={adding} onClose={() => setAdding(false)}>
-        <div className="p-6">
-          <p className="font-display font-semibold text-navy-900 text-lg">Assign a policy</p>
-          <p className="text-xs text-ink-500 mt-1">A unique policy number is generated automatically and emailed to them right away.</p>
-          <form onSubmit={handleAdd} className="space-y-4 mt-5">
-            <Field label="Policyholder's email">
-              <div className="relative">
-                <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-300" />
-                <input className="input pl-9" type="email" value={form.policyholderEmail} onChange={(e) => setForm({ ...form, policyholderEmail: e.target.value })} placeholder="policyholder@email.com" required />
-              </div>
-            </Field>
-            <Field label="Category">
-              <select className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-                {Object.keys(CATEGORY_META).map((c) => <option key={c}>{c}</option>)}
-              </select>
-            </Field>
-            <div className="flex gap-3 pt-1">
-              <button type="button" onClick={() => setAdding(false)} className="btn-ghost flex-1">Cancel</button>
-              <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-40">{saving ? "Assigning…" : "Assign"}</button>
-            </div>
-          </form>
+      {policies.length === 0 ? (
+        <Card className="p-8 text-center">
+          <div className="w-12 h-12 rounded-2xl bg-navy-50 text-navy-700 flex items-center justify-center mx-auto">
+            <FileBadge className="w-6 h-6" />
+          </div>
+          <h2 className="font-display font-semibold text-navy-900 mt-4">No policy assigned yet</h2>
+          <p className="text-sm text-ink-500 mt-1 max-w-md mx-auto">Ask your insurer to assign a policy to the same email address used for this account.</p>
+        </Card>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-4">
+          {policies.map((policy) => {
+            const category = CATEGORY_META[policy.category] || { color: "#1e4fd9", bg: "#e8edfd" };
+            return (
+              <Card key={policy._id || policy.policyId} className="p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ backgroundColor: category.bg, color: category.color }}>
+                    <FileBadge className="w-5 h-5" />
+                  </div>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                    <ShieldCheck className="w-3.5 h-3.5" />Active
+                  </span>
+                </div>
+                <p className="font-display text-lg font-semibold text-navy-900 mt-4">{policy.policyId}</p>
+                <p className="text-sm text-ink-700 mt-1">{policy.category}</p>
+                <div className="border-t border-ink-900/8 mt-4 pt-4 space-y-2 text-xs text-ink-500">
+                  <p className="flex items-center gap-2"><Building2 className="w-3.5 h-3.5" />{policy.insurer}</p>
+                  {policy.createdAt && <p>Assigned {fmtDate(policy.createdAt)}</p>}
+                </div>
+              </Card>
+            );
+          })}
         </div>
-      </Modal>
+      )}
     </div>
   );
 }

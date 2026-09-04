@@ -20,8 +20,7 @@ async function registerPolicy(req, res) {
       return res.status(400).json({ message: "Policyholder email and category are required." });
     }
 
-    const adjuster = await User.findById(req.user.id).select("orgName");
-    if (!adjuster?.orgName) {
+    if (!req.user.organizationId || !req.user.orgName) {
       return res.status(400).json({ message: "Your account has no organization on file." });
     }
 
@@ -31,7 +30,7 @@ async function registerPolicy(req, res) {
     let policyId;
     for (let attempt = 0; attempt < 5; attempt++) {
       const candidate = generatePolicyId();
-      const clash = await Policy.findOne({ policyId: candidate, insurer: adjuster.orgName });
+      const clash = await Policy.findOne({ policyId: candidate, organization: req.user.organizationId });
       if (!clash) {
         policyId = candidate;
         break;
@@ -43,13 +42,14 @@ async function registerPolicy(req, res) {
 
     const policy = await Policy.create({
       policyId,
-      insurer: adjuster.orgName,
+      organization: req.user.organizationId,
+      insurer: req.user.orgName,
       category,
       policyholderEmail: email,
       registeredBy: req.user.id,
     });
 
-    await sendPolicyAssignedEmail(email, policyId, adjuster.orgName, category);
+    await sendPolicyAssignedEmail(email, policyId, req.user.orgName, category);
 
     return res.status(201).json({ policy });
   } catch (err) {
@@ -67,8 +67,12 @@ async function registerPolicy(req, res) {
  */
 async function listPolicies(req, res) {
   try {
-    const adjuster = await User.findById(req.user.id).select("orgName");
-    const policies = await Policy.find({ insurer: adjuster?.orgName }).sort({ createdAt: -1 });
+    const policies = await Policy.find({
+      $or: [
+        { organization: req.user.organizationId },
+        { organization: null, insurer: req.user.orgName },
+      ],
+    }).sort({ createdAt: -1 });
     return res.status(200).json({ policies });
   } catch (err) {
     console.error("List policies error:", err);
@@ -82,9 +86,14 @@ async function listPolicies(req, res) {
  */
 async function deactivatePolicy(req, res) {
   try {
-    const adjuster = await User.findById(req.user.id).select("orgName");
     const policy = await Policy.findOneAndUpdate(
-      { _id: req.params.id, insurer: adjuster?.orgName },
+      {
+        _id: req.params.id,
+        $or: [
+          { organization: req.user.organizationId },
+          { organization: null, insurer: req.user.orgName },
+        ],
+      },
       { isActive: false },
       { new: true }
     );
@@ -100,13 +109,12 @@ async function deactivatePolicy(req, res) {
  * Used internally by claimsController to validate a claim's Policy ID
  * against what's genuinely on file for that insurer + category.
  */
-async function findValidPolicy(policyId, insurer, category) {
+async function findValidPolicy(policyId, policyholderEmail) {
   return Policy.findOne({
     policyId: (policyId || "").trim(),
-    insurer,
-    category,
+    policyholderEmail: (policyholderEmail || "").toLowerCase().trim(),
     isActive: true,
-  });
+  }).populate("organization", "name status");
 }
 
 /**

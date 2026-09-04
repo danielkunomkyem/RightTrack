@@ -39,6 +39,7 @@ const claimSchema = new mongoose.Schema(
     applicantUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 
     policyId: { type: String, required: true },
+    organization: { type: mongoose.Schema.Types.ObjectId, ref: "Organization", default: null, index: true },
     insurer: { type: String, required: true },
     category: { type: String, required: true },
     amount: { type: Number, required: true },

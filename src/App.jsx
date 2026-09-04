@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "./components/Sidebar.jsx";
 import Topbar from "./components/Topbar.jsx";
 import NotifPanel from "./components/NotifPanel.jsx";
@@ -14,9 +15,11 @@ import ApplicantDashboard from "./pages/applicant/Dashboard.jsx";
 import NewClaimWizard from "./pages/applicant/NewClaim.jsx";
 import MyClaims from "./pages/applicant/MyClaims.jsx";
 import ClaimDetailApplicant from "./pages/applicant/ClaimDetail.jsx";
+import MyPolicies from "./pages/applicant/MyPolicies.jsx";
 import AdminDashboard from "./pages/admin/Dashboard.jsx";
 import ClaimsQueue from "./pages/admin/Queue.jsx";
 import ClaimReview from "./pages/admin/ClaimReview.jsx";
+import ManagePolicies from "./pages/admin/Policies.jsx";
 import Billing from "./pages/admin/Billing.jsx";
 import SuperAdminDashboard from "./pages/superadmin/Dashboard.jsx";
 import SuperAdminClaims from "./pages/superadmin/Claims.jsx";
@@ -28,17 +31,21 @@ import { seedClaims, seedAdjusters, seedPolicyholders } from "./lib/data.js";
 import { NOW, fmtMoney, uid } from "./lib/helpers.js";
 import { PREMIUM_PRICE, PREMIUM_TRIAL_DAYS } from "./lib/constants.js";
 import { SiteNavContext } from "./lib/SiteNav.jsx";
+import { SCREEN_PATHS, appPath, resolveRoute, roleHomePath } from "./lib/routes.js";
 import { loginRequest, verifyOtpRequest, resendOtpRequest, signupRequest, verifySignupOtpRequest, resendSignupOtpRequest, meRequest, googleAuthRequest, listClaimsRequest, createClaimRequest, reuploadRequest, rateClaimRequest, startReviewRequest, requestInfoRequest, decideClaimRequest, listMyPoliciesRequest } from "./lib/api.js";
 import { initGoogleSignIn, promptGoogleSignIn } from "./lib/googleAuth.js";
 
 export default function App() {
-  const [screen, setScreen] = useState("landing");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const route = resolveRoute(location.pathname);
+  const screen = route.screen;
+  const view = route.view || "dashboard";
+  const selected = route.claimId || null;
   const [scrollTarget, setScrollTarget] = useState(null);
-  const [pendingEmail, setPendingEmail] = useState("");
-  const [pendingRole, setPendingRole] = useState("applicant");
-  const [pendingRemember, setPendingRemember] = useState(false);
-  const [signupRole, setSignupRole] = useState("applicant");
-  const [pendingSignup, setPendingSignup] = useState(null);
+  const [pendingEmail, setPendingEmail] = useState(() => sessionStorage.getItem("rt_pending_email") || "");
+  const [pendingRole, setPendingRole] = useState(() => sessionStorage.getItem("rt_pending_role") || "applicant");
+  const [pendingRemember, setPendingRemember] = useState(() => sessionStorage.getItem("rt_pending_remember") === "true");
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [otpResendStatus, setOtpResendStatus] = useState("");
@@ -49,8 +56,6 @@ export default function App() {
   const [myPolicies, setMyPolicies] = useState([]);
   const [adjusters, setAdjusters] = useState(seedAdjusters);
   const [policyholders, setPolicyholders] = useState(seedPolicyholders);
-  const [view, setView] = useState("dashboard");
-  const [selected, setSelected] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [mobileOpen, setMobileOpen] = useState(false);
   useEffect(() => {
@@ -60,11 +65,26 @@ export default function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [profile, setProfile] = useState({ avatarUrl: null, fullName: "", email: "", phone: "", policyId: "", plan: "", orgName: "", licenseNumber: "", notifyEmail: true, notifySms: false });
   const updateProfile = (patch) => setProfile((prev) => ({ ...prev, ...patch }));
+  const setScreen = (next, options) => navigate(SCREEN_PATHS[next] || "/", options);
+  const setView = (next) => navigate(appPath(role, next));
+
+  useEffect(() => {
+    if (pendingEmail) sessionStorage.setItem("rt_pending_email", pendingEmail);
+    else sessionStorage.removeItem("rt_pending_email");
+  }, [pendingEmail]);
+
+  useEffect(() => {
+    sessionStorage.setItem("rt_pending_role", pendingRole);
+  }, [pendingRole]);
+
+  useEffect(() => {
+    sessionStorage.setItem("rt_pending_remember", String(pendingRemember));
+  }, [pendingRemember]);
 
   useEffect(() => {
     if (screen === "landing" && scrollTarget) return;
     window.scrollTo(0, 0);
-  }, [screen]);
+  }, [location.pathname, screen, scrollTarget]);
 
   // Load real claims from the backend once the person is inside the app.
   useEffect(() => {
@@ -98,8 +118,6 @@ export default function App() {
 
   const enterApp = (r = "applicant", identity = null) => {
     setRole(r);
-    setScreen("app");
-    setView(r === "superadmin" ? "sa-dashboard" : "dashboard");
     if (identity) {
       setProfile((prev) => ({
         ...prev,
@@ -110,12 +128,14 @@ export default function App() {
         licenseNumber: identity.licenseNumber || "",
       }));
     }
+    if (screen !== "app" || route.requiredRole !== r) {
+      navigate(roleHomePath(r), { replace: true });
+    }
   };
   const exitApp = () => {
     localStorage.removeItem("rt_token");
-    setScreen("landing");
-    setView("dashboard");
-    setSelected(null);
+    setPendingEmail("");
+    navigate("/", { replace: true });
   };
 
   // On page load, try to restore a session from a token saved in localStorage.
@@ -155,15 +175,13 @@ export default function App() {
     });
   }, []);
 
-  const openClaim = (id) => { setSelected(id); setView("detail"); };
+  const openClaim = (id) => navigate(appPath(role, "detail", id));
 
   const addClaim = async (claimObj, refToOpen) => {
     if (claimObj) {
       try {
         const { claim } = await createClaimRequest({
           policyId: claimObj.policyId,
-          insurer: claimObj.insurer,
-          category: claimObj.category,
           amount: claimObj.amount,
           description: claimObj.description,
           documents: claimObj.documents,
@@ -176,7 +194,7 @@ export default function App() {
         return null;
       }
     }
-    if (refToOpen) { setSelected(refToOpen); setView("detail"); }
+    if (refToOpen) openClaim(refToOpen);
   };
 
   const reupload = async (id, files) => {
@@ -264,22 +282,22 @@ export default function App() {
       document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
     } else {
       setScrollTarget(id);
-      setScreen("landing");
+      navigate("/");
     }
   };
 
   const siteNav = {
     onNavAnchor: navAnchor,
-    onDevelopers: () => setScreen("developers"),
-    onGetStarted: () => { setSignupRole("applicant"); setScreen("signup"); },
-    onLogin: () => setScreen("login"),
-    onHome: () => { setScrollTarget(null); setScreen("landing"); },
-    onFaq: () => setScreen("faq"),
-    onBlog: () => setScreen("blog"),
-    onPrivacy: () => setScreen("privacy"),
-    onTerms: () => setScreen("terms"),
+    onDevelopers: () => navigate("/developers"),
+    onGetStarted: () => navigate("/signup"),
+    onLogin: () => navigate("/login"),
+    onHome: () => { setScrollTarget(null); navigate("/"); },
+    onFaq: () => navigate("/faq"),
+    onBlog: () => navigate("/blog"),
+    onPrivacy: () => navigate("/privacy"),
+    onTerms: () => navigate("/terms"),
   };
-  const goSignupAsAdjuster = () => { setSignupRole("admin"); setScreen("signup"); };
+  const goSignupAsAdjuster = () => navigate("/signup/adjuster");
 
   if (!sessionChecked) {
     return (
@@ -290,6 +308,22 @@ export default function App() {
         <Toast toasts={toasts} />
       </>
     );
+  }
+
+  if (screen === "not-found") {
+    return <Navigate to={localStorage.getItem("rt_token") ? roleHomePath(role) : "/"} replace />;
+  }
+
+  if (screen === "app" && !localStorage.getItem("rt_token")) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+
+  if (screen === "app" && route.requiredRole !== role) {
+    return <Navigate to={roleHomePath(role)} replace />;
+  }
+
+  if ((screen === "signup-verify" || screen === "login-verify") && !pendingEmail) {
+    return <Navigate to={screen === "signup-verify" ? "/login" : pendingRole === "superadmin" ? "/super-admin/login" : "/login"} replace />;
   }
 
   if (screen === "landing") {
@@ -329,7 +363,8 @@ export default function App() {
     return (
       <>
       <SignUp
-        initialRole={signupRole}
+        initialRole={route.signupRole || "applicant"}
+        onRoleChange={(nextRole) => navigate(nextRole === "admin" ? "/signup/adjuster" : "/signup", { replace: true })}
         onGoLogin={() => setScreen("login")}
         onTerms={() => setScreen("terms")}
         onPrivacy={() => setScreen("privacy")}
@@ -381,6 +416,7 @@ export default function App() {
           try {
             const res = await verifySignupOtpRequest(pendingEmail, otp, pendingRemember);
             localStorage.setItem("rt_token", res.token);
+            setPendingEmail("");
             pushToast({ type: "success", title: "Email verified", body: "Your policyholder account is now active." });
             enterApp(res.user.role, res.user);
           } catch (err) {
@@ -459,6 +495,7 @@ export default function App() {
           try {
             const res = await verifyOtpRequest(pendingEmail, otp, pendingRemember);
             localStorage.setItem("rt_token", res.token);
+            setPendingEmail("");
             enterApp(res.user.role, res.user);
           } catch (err) {
             setAuthError(err.message);
@@ -520,6 +557,7 @@ export default function App() {
   if (view === "new") title = "New Claim";
   if (view === "claims") title = "My Claims";
   if (view === "queue") title = "Claims Queue";
+  if (view === "policies") title = role === "admin" ? "Manage Policies" : "My Policies";
   if (view === "api") title = "Developer / API";
   if (view === "billing") title = "Plans & Billing";
   if (view === "sa-dashboard") title = "Super Admin Overview";
@@ -531,16 +569,18 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex bg-[#f5f6fa]">
-      <Sidebar role={role} plan={plan} active={view} onNav={(v) => { setView(v); setSelected(null); }} onExit={exitApp} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
+      <Sidebar role={role} plan={plan} active={view} onNav={setView} onExit={exitApp} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
       <div className="flex-1 w-full min-w-0 flex flex-col">
         <Topbar title={title} subtitle={subtitle} role={role} plan={plan} onMenu={() => setMobileOpen(true)} notifCount={notifCount} onBell={() => setNotifOpen((o) => !o)} onSettings={() => setView("settings")} avatarUrl={profile.avatarUrl} profile={profile} />
         <main className="flex-1 p-4 sm:p-8">
           {role === "applicant" && view === "dashboard" && <ApplicantDashboard claims={claims} onNav={setView} onOpenClaim={openClaim} profile={profile} />}
-          {role === "applicant" && view === "new" && <NewClaimWizard claims={claims} profile={profile} onSubmitClaim={addClaim} pushToast={pushToast} />}
+          {role === "applicant" && view === "new" && <NewClaimWizard claims={claims} policies={myPolicies} profile={profile} onSubmitClaim={addClaim} pushToast={pushToast} />}
           {role === "applicant" && view === "claims" && <MyClaims claims={claims} onOpenClaim={openClaim} onNav={setView} />}
+          {role === "applicant" && view === "policies" && <MyPolicies policies={myPolicies} />}
           {role === "applicant" && view === "detail" && selectedClaim && <ClaimDetailApplicant claim={selectedClaim} onBack={() => setView("claims")} onReupload={reupload} onRate={rate} pushToast={pushToast} />}
           {role === "admin" && view === "dashboard" && <AdminDashboard claims={adjusterClaims} onOpenClaim={openClaim} profile={profile} />}
           {role === "admin" && view === "queue" && <ClaimsQueue claims={adjusterClaims} onOpenClaim={openClaim} plan={plan} onGoBilling={() => setView("billing")} pushToast={pushToast} insurer={profile.orgName} />}
+          {role === "admin" && view === "policies" && <ManagePolicies pushToast={pushToast} />}
           {role === "admin" && view === "detail" && selectedClaim && isOwnClaim && <ClaimReview claim={selectedClaim} onBack={() => setView("queue")} onStartReview={startReview} onDecision={decide} onRequestInfo={requestInfo} pushToast={pushToast} />}
           {role === "admin" && view === "billing" && <Billing plan={plan} onUpgrade={upgradePlan} onDowngrade={downgradePlan} onStartTrial={startTrial} />}
           {role === "superadmin" && view === "sa-dashboard" && <SuperAdminDashboard claims={claims} adjusters={adjusters} policyholders={policyholders} onOpenClaim={openClaim} onNav={setView} />}
